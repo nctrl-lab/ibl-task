@@ -7,13 +7,28 @@ import pyqtgraph as pg
 from PyQt6.QtCore import Qt, QProcess, QSettings
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ibl.config import (
-    CONTRAST_PRESETS, REWARD_DEFAULT_MS, REWARD_DEFAULT_UL, WHEEL_GAIN_DEG_PER_MM,
+    CONTRAST_PRESETS,
+    REWARD_DEFAULT_MS,
+    REWARD_DEFAULT_UL,
+    WHEEL_GAIN_DEG_PER_MM,
 )
 
 
@@ -29,7 +44,9 @@ class PsychometricPlot(pg.PlotWidget):
         self.setXRange(-1.05, 1.05)
         self.addLine(y=0.5, pen=_DASH)
         self.addLine(x=0.0, pen=_DASH)
-        self.curve = self.plot([], [], pen="y", symbol="o", symbolBrush="y", symbolSize=8)
+        self.curve = self.plot(
+            [], [], pen="y", symbol="o", symbolBrush="y", symbolSize=8
+        )
 
     def refresh(self, results: list) -> None:
         bins: dict[float, list[int]] = defaultdict(list)
@@ -66,10 +83,13 @@ class AccuracyPlot(pg.PlotWidget):
 class OutcomePlot(pg.PlotWidget):
     """Per-trial bars: height encodes side+outcome (correct=±1, wrong=±0.2),
     color encodes correctness (green=correct, red=wrong, gray=no-go)."""
+
     SHOW = 80
 
     def __init__(self) -> None:
-        super().__init__(title=f"Recent {self.SHOW} trials  (R↑ / L↓, green=correct, red=wrong)")
+        super().__init__(
+            title=f"Recent {self.SHOW} trials  (R↑ / L↓, green=correct, red=wrong)"
+        )
         self.setLabel("bottom", "Trial")
         self.setLabel("left", "Side · outcome")
         self.setYRange(-1.1, 1.1)
@@ -93,8 +113,7 @@ class OutcomePlot(pg.PlotWidget):
         self.bars.setOpts(x=xs, height=hs, brushes=brushes)
         if results:
             last = results[-1].trial_index
-            self.setXRange(max(-0.5, last - self.SHOW + 0.5),
-                           last + 0.5, padding=0)
+            self.setXRange(max(-0.5, last - self.SHOW + 0.5), last + 0.5, padding=0)
 
 
 class BiasPlot(pg.PlotWidget):
@@ -105,8 +124,9 @@ class BiasPlot(pg.PlotWidget):
         self.setXRange(-0.7, 1.7)
         self.addLine(y=0.5, pen=_DASH)
         self.getAxis("bottom").setTicks([[(0, "Left stim"), (1, "Right stim")]])
-        self.bars = pg.BarGraphItem(x=[0, 1], height=[0, 0], width=0.6,
-                                    brushes=["#5588cc", "#cc5588"])
+        self.bars = pg.BarGraphItem(
+            x=[0, 1], height=[0, 0], width=0.6, brushes=["#5588cc", "#cc5588"]
+        )
         self.addItem(self.bars)
 
     def refresh(self, results: list) -> None:
@@ -178,10 +198,7 @@ class MainWindow(QMainWindow):
         train_form = QFormLayout(train_box)
         train_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Reward valve time (ms) and dispensed water (µL) are independent —
-        # the valve dose is non-linear in pulse width, so the experimenter
-        # measures and enters µL by hand. ms drives the Teensy; µL drives the
-        # cumulative-water readout.
+        # Reward valve time (ms) and dispensed water (µL).
         reward_row = QHBoxLayout()
         reward_row.setSpacing(6)
         self.reward_ms = QSpinBox()
@@ -221,7 +238,7 @@ class MainWindow(QMainWindow):
         train_form.addRow("Gain (deg/mm):", self.gain)
         self.contrast_combo = QComboBox()
         for preset in CONTRAST_PRESETS:
-            label = ", ".join(f"{c*100:g}" for c in preset)
+            label = ", ".join(f"{c * 100:g}" for c in preset)
             self.contrast_combo.addItem(label, list(preset))
         train_form.addRow("Contrast (%):", self.contrast_combo)
         ctrl_row.addWidget(train_box, 1)
@@ -269,27 +286,28 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel("Idle.")
         f = self.status_label.font()
-        f.setBold(True); f.setPointSize(f.pointSize() + 1)
+        f.setBold(True)
+        f.setPointSize(f.pointSize() + 1)
         self.status_label.setFont(f)
         grid.addWidget(self.status_label, 0, 0, 1, 6)
 
-        grid.addWidget(self._kv_label("Trial"),   1, 0)
+        grid.addWidget(self._kv_label("Trial"), 1, 0)
         self.trial_value = QLabel("—")
-        grid.addWidget(self.trial_value,          1, 1)
+        grid.addWidget(self.trial_value, 1, 1)
         grid.addWidget(self._kv_label("Correct"), 1, 2)
         self.correct_value = QLabel("—")
-        grid.addWidget(self.correct_value,        1, 3)
-        grid.addWidget(self._kv_label("No-go"),   1, 4)
+        grid.addWidget(self.correct_value, 1, 3)
+        grid.addWidget(self._kv_label("No-go"), 1, 4)
         self.nogo_value = QLabel("—")
-        grid.addWidget(self.nogo_value,           1, 5)
+        grid.addWidget(self.nogo_value, 1, 5)
 
-        grid.addWidget(self._kv_label("Last"),    2, 0)
+        grid.addWidget(self._kv_label("Last"), 2, 0)
         self.last_trial_label = QLabel("—")
-        grid.addWidget(self.last_trial_label,     2, 1, 1, 5)
+        grid.addWidget(self.last_trial_label, 2, 1, 1, 5)
 
-        grid.addWidget(self._kv_label("Water"),   3, 0)
+        grid.addWidget(self._kv_label("Water"), 3, 0)
         self.water_label = QLabel("0.0 µL  (0 rewards)")
-        grid.addWidget(self.water_label,          3, 1, 1, 5)
+        grid.addWidget(self.water_label, 3, 1, 1, 5)
 
         grid.setColumnStretch(5, 1)
         root.addWidget(status_box)
@@ -301,15 +319,17 @@ class MainWindow(QMainWindow):
         self.acc = AccuracyPlot()
         self.raster = OutcomePlot()
         self.bias = BiasPlot()
-        plots.addWidget(self.psy,    0, 0)
-        plots.addWidget(self.acc,    0, 1)
+        plots.addWidget(self.psy, 0, 0)
+        plots.addWidget(self.acc, 0, 1)
         plots.addWidget(self.raster, 1, 0)
-        plots.addWidget(self.bias,   1, 1)
+        plots.addWidget(self.bias, 1, 1)
         root.addLayout(plots, stretch=1)
 
     def _kv_label(self, text):
         lbl = QLabel(f"{text}:")
-        f = lbl.font(); f.setBold(True); lbl.setFont(f)
+        f = lbl.font()
+        f.setBold(True)
+        lbl.setFont(f)
         lbl.setStyleSheet("color: #b0b0b0;")
         return lbl
 
@@ -357,15 +377,24 @@ class MainWindow(QMainWindow):
         scr = screens[screen_idx] if 0 <= screen_idx < len(screens) else screens[0]
         geom = scr.geometry()
         argv = [
-            "-m", "ibl.task",
-            "--subject", subject,
-            "--n-trials", str(self.n_trials.value()),
-            "--reward-ms", str(self.reward_ms.value()),
-            "--reward-ul", str(self.reward_ul.value()),
-            "--gain", str(self.gain.value()),
-            "--contrasts", ",".join(str(c) for c in contrasts),
-            "--screen", str(screen_idx),
-            "--screen-size", f"{geom.width()}x{geom.height()}",
+            "-m",
+            "ibl.task",
+            "--subject",
+            subject,
+            "--n-trials",
+            str(self.n_trials.value()),
+            "--reward-ms",
+            str(self.reward_ms.value()),
+            "--reward-ul",
+            str(self.reward_ul.value()),
+            "--gain",
+            str(self.gain.value()),
+            "--contrasts",
+            ",".join(str(c) for c in contrasts),
+            "--screen",
+            str(screen_idx),
+            "--screen-size",
+            f"{geom.width()}x{geom.height()}",
             "--ready",
         ]
         if self.mock_cb.isChecked():
@@ -436,7 +465,9 @@ class MainWindow(QMainWindow):
             self._set_state("running")
             self._set_status(f"Running session for {self.subject.text().strip()}.")
         elif kind == "trial":
-            self._on_trial_complete(SimpleNamespace(**{k: v for k, v in msg.items() if k != "type"}))
+            self._on_trial_complete(
+                SimpleNamespace(**{k: v for k, v in msg.items() if k != "type"})
+            )
         elif kind == "error":
             self._last_error = msg.get("msg", "unknown error")
             self._set_status(f"ERROR: {self._last_error}")
@@ -451,7 +482,9 @@ class MainWindow(QMainWindow):
         if self._last_error is not None:
             self._set_status(f"Session aborted (code {exit_code}): {self._last_error}")
             return
-        msg = {0: "Session complete."}.get(exit_code, f"Session exited with code {exit_code}.")
+        msg = {0: "Session complete."}.get(
+            exit_code, f"Session exited with code {exit_code}."
+        )
         self._set_status(msg)
 
     # ---- per-trial UI update ----
@@ -460,16 +493,20 @@ class MainWindow(QMainWindow):
         self._results.append(result)
         n = len(self._results)
         n_correct = sum(1 for r in self._results if r.correct)
-        n_nogo    = sum(1 for r in self._results if r.response == 0)
-        n_total   = self.n_trials.value()
-        pct       = 100 * n_correct / n if n else 0.0
+        n_nogo = sum(1 for r in self._results if r.response == 0)
+        n_total = self.n_trials.value()
+        pct = 100 * n_correct / n if n else 0.0
         self._set_status(f"Running — trial {n} of {n_total}")
         self.trial_value.setText(f"{n} / {n_total}")
         self.correct_value.setText(f"{n_correct} / {n}  ({pct:.1f}%)")
         self.nogo_value.setText(str(n_nogo))
         side = "R" if result.side > 0 else "L"
         resp = "R" if result.response > 0 else ("L" if result.response < 0 else "no-go")
-        outcome = "✓ correct" if result.correct else ("✗ wrong" if result.response != 0 else "— no-go")
+        outcome = (
+            "✓ correct"
+            if result.correct
+            else ("✗ wrong" if result.response != 0 else "— no-go")
+        )
         self.last_trial_label.setText(
             f"side={side}   c={result.contrast:.4g}   →   {resp}   {outcome}   "
             f"(RT {result.response_time_s:.2f} s)"
@@ -490,24 +527,33 @@ class MainWindow(QMainWindow):
         self.status_label.setText(text)
 
     def _set_inputs_enabled(self, enabled):
-        for w in (self.subject, self.port, self.mock_cb, self.n_trials, self.reward_ms,
-                  self.reward_ul, self.gain, self.contrast_combo, self.display):
+        for w in (
+            self.subject,
+            self.port,
+            self.mock_cb,
+            self.n_trials,
+            self.reward_ms,
+            self.reward_ul,
+            self.gain,
+            self.contrast_combo,
+            self.display,
+        ):
             w.setEnabled(enabled)
 
     # ---- persistence ----
 
     def _save_settings(self):
         s = self._settings
-        s.setValue("subject",          self.subject.text())
-        s.setValue("port",             self.port.text())
-        s.setValue("mock",             self.mock_cb.isChecked())
-        s.setValue("n_trials",         self.n_trials.value())
-        s.setValue("reward_ms",        self.reward_ms.value())
-        s.setValue("reward_ul",        self.reward_ul.value())
-        s.setValue("gain",             self.gain.value())
-        s.setValue("contrast_index",   self.contrast_combo.currentIndex())
-        s.setValue("display_index",    self.display.currentIndex())
-        s.setValue("geometry",         self.saveGeometry())
+        s.setValue("subject", self.subject.text())
+        s.setValue("port", self.port.text())
+        s.setValue("mock", self.mock_cb.isChecked())
+        s.setValue("n_trials", self.n_trials.value())
+        s.setValue("reward_ms", self.reward_ms.value())
+        s.setValue("reward_ul", self.reward_ul.value())
+        s.setValue("gain", self.gain.value())
+        s.setValue("contrast_index", self.contrast_combo.currentIndex())
+        s.setValue("display_index", self.display.currentIndex())
+        s.setValue("geometry", self.saveGeometry())
 
     def _restore_settings(self):
         s = self._settings
@@ -541,19 +587,19 @@ class MainWindow(QMainWindow):
 def _apply_dark_palette(app):
     app.setStyle("Fusion")
     pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window,          QColor(45, 45, 48))
-    pal.setColor(QPalette.ColorRole.WindowText,      Qt.GlobalColor.white)
-    pal.setColor(QPalette.ColorRole.Base,            QColor(30, 30, 32))
-    pal.setColor(QPalette.ColorRole.AlternateBase,   QColor(53, 53, 55))
-    pal.setColor(QPalette.ColorRole.ToolTipBase,     Qt.GlobalColor.white)
-    pal.setColor(QPalette.ColorRole.ToolTipText,     Qt.GlobalColor.white)
-    pal.setColor(QPalette.ColorRole.Text,            Qt.GlobalColor.white)
-    pal.setColor(QPalette.ColorRole.Button,          QColor(60, 60, 64))
-    pal.setColor(QPalette.ColorRole.ButtonText,      Qt.GlobalColor.white)
-    pal.setColor(QPalette.ColorRole.BrightText,      Qt.GlobalColor.red)
-    pal.setColor(QPalette.ColorRole.Highlight,       QColor(42, 130, 218))
+    pal.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))
+    pal.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+    pal.setColor(QPalette.ColorRole.Base, QColor(30, 30, 32))
+    pal.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 55))
+    pal.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+    pal.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+    pal.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+    pal.setColor(QPalette.ColorRole.Button, QColor(60, 60, 64))
+    pal.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+    pal.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+    pal.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
     pal.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
-    pal.setColor(QPalette.ColorRole.Link,            QColor(42, 130, 218))
+    pal.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
     pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(160, 160, 160))
     app.setPalette(pal)
 

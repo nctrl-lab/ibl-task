@@ -6,13 +6,18 @@ flow follow the IBL specification (Appendix 2 in `docs/`); hardware control
 runs on a Teensy 4.x and is driven by Python via a 3-byte serial protocol at
 1 kHz.
 
+<p align="center">
+  <img src="docs/ibl_gui.png" width="49%"/>
+  <img src="docs/ibl_screen.png" width="49%"/>
+</p>
+
 ## Install
 
 ```bash
 conda create -n ibl python=3.10
 conda install -n ibl -c conda-forge pyqt wxpython
 conda run -n ibl pip install psychopy
-conda run -n ibl pip install .
+conda run -n ibl pip install -e .
 ```
 
 Flash `teensy/teensy.ino` to a Teensy 4.x with an Audio Shield using the
@@ -78,6 +83,16 @@ In the GUI, set Subject, Port (`/dev/ttyACM0` by default), N trials, Reward
 PsychoPy window stops the session cleanly. Tick **Mock** to drive the wheel
 with ← / → arrow keys when no Teensy is connected.
 
+Optional — install a clickable desktop/menu launcher (Linux only):
+
+```bash
+python tools/install_desktop_entry.py
+```
+
+This places an "IBL task" entry in the application menu and a double-clickable
+icon on the Desktop folder. On GNOME you may need to right-click the desktop
+icon once and choose **Allow Launching**.
+
 ## Output
 
 Each session writes to `./<subject>_<YYYY-MM-DD_HH-MM-SS>/`:
@@ -89,15 +104,14 @@ Each session writes to `./<subject>_<YYYY-MM-DD_HH-MM-SS>/`:
 
 ## Per-rig calibration
 
-Two constants in `ibl/config.py` must be calibrated **per rig** before real
-sessions:
+`WHEEL_GAIN_DEG_PER_MM` in `ibl/config.py` is the visual degrees the Gabor
+moves per mm of wheel surface travel. IBL default is 4.0; it can be overridden
+in the GUI per session.
 
-- `REWARD_UL_PER_MS` — µL of water dispensed per ms of valve open time.
-- `WHEEL_GAIN_DEG_PER_MM` — visual degrees the Gabor moves per mm of wheel
-  surface travel. IBL default is 4.0; can be overridden in the GUI per
-  session.
-
-The live **Water** readout in the GUI assumes `REWARD_UL_PER_MS` is correct.
+Reward valve-open time (ms) and dispensed water (µL) are kept **independent**:
+`ms` controls the hardware, `µL` is the experimenter-measured volume that gets
+logged per trial and summed in the live **Water** readout. Calibrate them both
+manually for each rig.
 
 ## License
 

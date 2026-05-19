@@ -29,10 +29,9 @@ WHEEL_GAIN_DEG_PER_MM = 4.0
 COUNTS_PER_MM = ENCODER_PPR * 4 / (math.pi * WHEEL_DIAMETER_MM)
 GAIN_DEG_PER_COUNT = WHEEL_GAIN_DEG_PER_MM / COUNTS_PER_MM
 
-# Reward
-REWARD_UL_PER_MS = 1.5  # rig calibration: µL water per ms of valve open time
+# Reward — valve-open time (ms) and dispensed water (µL).
+REWARD_DEFAULT_MS = 50
 REWARD_DEFAULT_UL = 3.0
-REWARD_DEFAULT_MS = max(1, int(round(REWARD_DEFAULT_UL / REWARD_UL_PER_MS)))
 MAX_VALVE_MS = 200
 
 # Schedule
