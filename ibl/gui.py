@@ -174,6 +174,12 @@ class MainWindow(QMainWindow):
         self.n_trials.setValue(100)
         self.n_trials.setMaximumWidth(120)
         session_form.addRow("N trials:", self.n_trials)
+        self.water_limit = QSpinBox()
+        self.water_limit.setRange(1, 100000)
+        self.water_limit.setSuffix(" µL")
+        self.water_limit.setValue(1000)
+        self.water_limit.setMaximumWidth(120)
+        session_form.addRow("Water limit:", self.water_limit)
         ctrl_row.addWidget(session_box, 1)
 
         # Hardware
@@ -514,6 +520,13 @@ class MainWindow(QMainWindow):
         water_ul = sum(r.reward_ul for r in self._results)
         self.water_label.setText(f"{water_ul:.1f} µL  ({n_correct} rewards)")
         self._refresh_all_plots()
+        if water_ul >= self.water_limit.value() and self._state == "running":
+            self._set_status(
+                f"Water limit reached ({water_ul:.1f} ≥ "
+                f"{self.water_limit.value()} µL). Stopping..."
+            )
+            self._set_state("stopping")
+            self._proc.terminate()
 
     # ---- helpers ----
 
@@ -532,6 +545,7 @@ class MainWindow(QMainWindow):
             self.port,
             self.mock_cb,
             self.n_trials,
+            self.water_limit,
             self.reward_ms,
             self.reward_ul,
             self.gain,
@@ -548,6 +562,7 @@ class MainWindow(QMainWindow):
         s.setValue("port", self.port.text())
         s.setValue("mock", self.mock_cb.isChecked())
         s.setValue("n_trials", self.n_trials.value())
+        s.setValue("water_limit", self.water_limit.value())
         s.setValue("reward_ms", self.reward_ms.value())
         s.setValue("reward_ul", self.reward_ul.value())
         s.setValue("gain", self.gain.value())
@@ -561,6 +576,7 @@ class MainWindow(QMainWindow):
         self.port.setText(s.value("port", "/dev/ttyACM0", type=str))
         self.mock_cb.setChecked(s.value("mock", False, type=bool))
         self.n_trials.setValue(s.value("n_trials", 100, type=int))
+        self.water_limit.setValue(s.value("water_limit", 1000, type=int))
         self.reward_ms.setValue(s.value("reward_ms", REWARD_DEFAULT_MS, type=int))
         self.reward_ul.setValue(s.value("reward_ul", REWARD_DEFAULT_UL, type=float))
         self.gain.setValue(s.value("gain", WHEEL_GAIN_DEG_PER_MM, type=float))
