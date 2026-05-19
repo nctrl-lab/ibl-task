@@ -11,7 +11,9 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tkinter as tk
 from pathlib import Path
+from tkinter import filedialog
 
 
 def main() -> int:
@@ -48,6 +50,19 @@ def main() -> int:
     else:
         exec_field = ibl_bin
 
+    # Ask where session folders should be written; this becomes Path= in the
+    # .desktop entry, i.e. the launcher's working directory.
+    root = tk.Tk()
+    root.withdraw()
+    data_dir = filedialog.askdirectory(
+        title="IBL task — choose folder for session data (Cancel = $HOME)",
+        initialdir=str(home),
+    )
+    root.destroy()
+    if data_dir:
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+    path_line = f"Path={data_dir}\n" if data_dir else ""
+
     desktop = (
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -55,6 +70,7 @@ def main() -> int:
         "GenericName=trainingChoiceWorld 2AFC\n"
         "Comment=IBL trainingChoiceWorld visual 2AFC task for head-fixed mice\n"
         f"Exec={exec_field}\n"
+        f"{path_line}"
         "Icon=ibl-task\n"
         "Terminal=false\n"
         "Categories=Science;Education;\n"
@@ -98,6 +114,8 @@ def main() -> int:
 
     print(f"Installed: {dst_desktop}")
     print(f"Icon:      {dst_icon}")
+    if data_dir:
+        print(f"Data dir:  {data_dir}")
     if dst_launcher:
         print(f"Launcher:  {dst_launcher}")
         print("If the desktop icon shows as a text file, right-click it and")
