@@ -40,13 +40,21 @@ def main() -> int:
     dst_icon = icons_dir / "ibl-task.svg"
     shutil.copy(src_icon, dst_icon)
 
+    # Activate the conda env so the launcher sees the same libs as the terminal.
+    p = Path(ibl_bin).resolve()
+    conda_sh = p.parents[3] / "etc/profile.d/conda.sh"
+    if conda_sh.exists():
+        exec_field = f'bash -c "source {conda_sh} && conda activate {p.parents[1].name} && exec ibl"'
+    else:
+        exec_field = ibl_bin
+
     desktop = (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=IBL task\n"
         "GenericName=trainingChoiceWorld 2AFC\n"
         "Comment=IBL trainingChoiceWorld visual 2AFC task for head-fixed mice\n"
-        f"Exec={ibl_bin}\n"
+        f"Exec={exec_field}\n"
         "Icon=ibl-task\n"
         "Terminal=false\n"
         "Categories=Science;Education;\n"
