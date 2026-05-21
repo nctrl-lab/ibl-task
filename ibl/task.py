@@ -5,6 +5,7 @@ All hardware contact goes through the Teensy / FakeTeensy interface in ibl.io;
 
 import csv
 import datetime
+import json
 import random
 import time
 from collections import deque
@@ -290,16 +291,13 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
     )
 
 
-def run_session(hw, win, gabor, sync, *, subject, n_trials, reward_ul,
+def run_session(hw, win, gabor, sync, *, session_dir, n_trials, reward_ul,
                 active_contrasts=None, expansion_tiers=None,
                 on_trial_complete=None, should_stop=None):
     """Loop trials, log results. Returns 0 / 2 (hw error)."""
     schedule = TrainingSchedule(active_contrasts=active_contrasts,
                                 expansion_tiers=expansion_tiers)
-    sd = Path(f"{subject}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
-    sd.mkdir(parents=True, exist_ok=True)
-    logger = TrialLogger(sd)
-
+    logger = TrialLogger(session_dir)
     try:
         for trial_index in range(n_trials):
             if hw.error is not None:
@@ -320,6 +318,68 @@ def run_session(hw, win, gabor, sync, *, subject, n_trials, reward_ul,
         return 0
     finally:
         logger.close()
+
+
+def _write_summary(sd, start, end, args, results):
+    n = len(results)
+    n_correct = sum(1 for r in results if r.correct)
+    n_nogo = sum(1 for r in results if r.response == 0)
+    n_right = sum(1 for r in results if r.response > 0)
+    n_left = sum(1 for r in results if r.response < 0)
+    responded = n_right + n_left
+    rts = [r.response_time_s for r in results if r.correct]
+
+    s = {
+        "subject": args.subject,
+        "start": start.isoformat(timespec="seconds"),
+        "end": end.isoformat(timespec="seconds"),
+        "duration_s": (end - start).total_seconds(),
+        "n_trials_target": args.n_trials,
+        "reward_ms": args.reward_ms,
+        "reward_ul": args.reward_ul,
+        "water_limit_ul": args.water_limit,
+        "gain_deg_per_mm": args.gain,
+        "contrasts": args.contrasts,
+        "mock": args.mock,
+        "port": None if args.mock else args.port,
+        "screen": args.screen,
+        "n_completed": n,
+        "n_correct": n_correct,
+        "n_nogo": n_nogo,
+        "correct_rate": (n_correct / n) if n else None,
+        "mean_rt_correct_s": (sum(rts) / len(rts)) if rts else None,
+        "response_bias": ((n_right - n_left) / responded) if responded else None,
+        "water_dispensed_ul": sum(r.reward_ul for r in results),
+    }
+    (sd / "summary.json").write_text(json.dumps(s, indent=2) + "\n")
+
+    pct = f"{100 * s['correct_rate']:.1f}%" if s["correct_rate"] is not None else "—"
+    rt_s = f"{s['mean_rt_correct_s']:.3f} s" if s["mean_rt_correct_s"] is not None else "—"
+    bias_s = f"{s['response_bias']:+.3f}" if s["response_bias"] is not None else "—"
+    lines = [
+        f"# {s['subject']} — {start:%Y-%m-%d %H:%M:%S}",
+        "",
+        f"Duration: {str(end - start).split('.')[0]}",
+        "",
+        "## Setup",
+        "",
+        f"- N trials (target): {s['n_trials_target']}",
+        f"- Reward: {s['reward_ms']} ms / {s['reward_ul']} µL",
+        f"- Water limit: {s['water_limit_ul'] or '—'} µL",
+        f"- Wheel gain: {s['gain_deg_per_mm']} deg/mm",
+        f"- Contrasts: {s['contrasts'] or 'default'}",
+        f"- Hardware: {'mock' if s['mock'] else s['port']}, screen {s['screen']}",
+        "",
+        "## Outcome",
+        "",
+        f"- Trials completed: {s['n_completed']}",
+        f"- Correct: {s['n_correct']} ({pct})",
+        f"- No-go: {s['n_nogo']}",
+        f"- Mean RT (correct): {rt_s}",
+        f"- Response bias (R−L)/(R+L): {bias_s}",
+        f"- Water dispensed: {s['water_dispensed_ul']:.1f} µL  ({s['n_correct']} rewards)",
+    ]
+    (sd / "SUMMARY.md").write_text("\n".join(lines) + "\n")
 
 
 # CLI runner: `python -m ibl.task ...`. Emits one JSON line per trial on stdout.
@@ -348,6 +408,8 @@ def _runner_main():
                     help="display index for the PsychoPy fullscreen window")
     ap.add_argument("--screen-size", type=str, default=None,
                     help="screen resolution WxH for the chosen display, e.g. 1920x1080")
+    ap.add_argument("--water-limit", type=int, default=None,
+                    help="logged in SUMMARY.md; enforcement lives in the GUI")
     ap.add_argument("--ready", action="store_true",
                     help="open window in standby; wait for a 'start' line on stdin before trials")
     args = ap.parse_args()
@@ -415,14 +477,23 @@ def _runner_main():
                 win.flip()
             emit({"type": "running"})
 
-        return run_session(
-            hw, win, gabor, sync,
-            subject=args.subject, n_trials=args.n_trials,
-            reward_ul=args.reward_ul,
-            active_contrasts=active, expansion_tiers=tiers,
-            on_trial_complete=lambda r: emit({"type": "trial", **dataclasses.asdict(r)}),
-            should_stop=lambda: stop["flag"],
-        )
+        start = datetime.datetime.now()
+        sd = Path(f"{args.subject}_{start.strftime('%Y-%m-%d_%H-%M-%S')}")
+        sd.mkdir(parents=True, exist_ok=True)
+        results = []
+        def on_trial(r):
+            results.append(r)
+            emit({"type": "trial", **dataclasses.asdict(r)})
+        try:
+            return run_session(
+                hw, win, gabor, sync, session_dir=sd,
+                n_trials=args.n_trials, reward_ul=args.reward_ul,
+                active_contrasts=active, expansion_tiers=tiers,
+                on_trial_complete=on_trial,
+                should_stop=lambda: stop["flag"],
+            )
+        finally:
+            _write_summary(sd, start, datetime.datetime.now(), args, results)
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
         emit({"type": "error", "msg": f"{type(exc).__name__}: {exc}"})

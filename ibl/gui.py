@@ -389,6 +389,8 @@ class MainWindow(QMainWindow):
             subject,
             "--n-trials",
             str(self.n_trials.value()),
+            "--water-limit",
+            str(self.water_limit.value()),
             "--reward-ms",
             str(self.reward_ms.value()),
             "--reward-ul",
