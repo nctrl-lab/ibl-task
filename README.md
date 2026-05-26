@@ -78,10 +78,17 @@ systematically lead the visual onset by the offsets above.
 ibl                        # launch the GUI
 ```
 
-In the GUI, set Subject, Port (`/dev/ttyACM0` by default), N trials, Reward
-(ms), Gain (deg/mm), and Contrast tiers, then press **Start**. **Esc** in the
-PsychoPy window stops the session cleanly. Tick **Mock** to drive the wheel
-with ← / → arrow keys when no Teensy is connected.
+In the GUI, set Subject, Port (`/dev/ttyACM0` by default), N trials, pick a
+**Reward** entry from the dropdown (populated from
+`~/.config/ibl-task/calibration.json` — run **Calibrate…** if it's empty),
+Gain (deg/mm), and Contrast tiers, then press **Ready** and **Start**.
+**Esc** in the PsychoPy window stops the session cleanly. Tick **Mock** to
+drive the wheel with ← / → arrow keys when no Teensy is connected.
+
+Tick **Auto** next to the reward dropdown to advance the reward one tier per
+correct trial (smallest → largest, capped) and reset to the smallest on a
+wrong or no-go trial. The dropdown updates each trial so the experimenter
+sees the current reward live.
 
 Optional — install a clickable desktop/menu launcher (Linux only):
 
@@ -112,6 +119,18 @@ Reward valve-open time (ms) and dispensed water (µL) are kept **independent**:
 `ms` controls the hardware, `µL` is the experimenter-measured volume that gets
 logged per trial and summed in the live **Water** readout. Calibrate them both
 manually for each rig.
+
+```bash
+ibl-calibrate              # launch the water calibration GUI
+```
+
+Each row is one target volume (defaults: 5, 10, 15, 20 µL — editable;
+use **+ Add target** / **✕** to add or remove rows). Set valve ms and
+N pulses, click **Dispense**, measure externally with a pipette (N=1
+single drop or N=50-100 cumulative), then nudge ms and dispense again
+until it matches the target. **Save** writes the `(target µL, ms,
+n_pulses)` table to `~/.config/ibl-task/calibration.json` and reloads
+it on next launch.
 
 ## License
 

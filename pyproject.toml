@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 ibl = "ibl.gui:main"
+ibl-calibrate = "ibl.calibrate:main"
 
 [tool.setuptools.packages.find]
 include = ["ibl*"]
