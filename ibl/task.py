@@ -20,7 +20,7 @@ from ibl.config import (
     EXPANSION_MIN_TRIALS, EXPANSION_TIERS, INITIAL_CONTRASTS, ITI_S,
     OPEN_LOOP_HOLD_S, ORI_DEG, QUIESCENCE_MAX_S, QUIESCENCE_MEAN_S,
     QUIESCENCE_MIN_S, QUIESCENCE_STILL_BAND_DEG, RESPONSE_WINDOW_S,
-    REWARD_DEFAULT_MS, REWARD_DEFAULT_UL, RIG_DISTANCE_CM, RIG_RESOLUTION,
+    RIG_DISTANCE_CM, RIG_RESOLUTION,
     RIG_WIDTH_CM, SF_CPD, SIZE_DEG, STIM_START_OFFSET_DEG, SYNC_PIX,
     WHEEL_GAIN_DEG_PER_MM,
 )
@@ -213,7 +213,7 @@ def _wait(duration: float, flip: Callable[[], None]) -> None:
 
 
 def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
-              reward_ul, log_frame=None):
+              reward_ul, error_timeout_s, log_frame=None):
     def flip():
         win.flip()
         if log_frame is not None:
@@ -273,7 +273,7 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
         dispensed_ul = reward_ul
     else:
         hw.noise()
-        _wait(ERROR_TIMEOUT_S, flip)
+        _wait(error_timeout_s, flip)
         dispensed_ul = 0.0
     gabor.contrast = 0.0
     sync_sq.fillColor = "black"
@@ -291,36 +291,57 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
     )
 
 
-def run_session(hw, win, gabor, sync, *, session_dir, n_trials, reward_ul,
+def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
+                reward_ms, reward_ul, error_timeout_s,
+                auto_reward=False, calibration=None,
                 active_contrasts=None, expansion_tiers=None,
                 on_trial_complete=None, should_stop=None):
-    """Loop trials, log results. Returns 0 / 2 (hw error)."""
+    """Loop trials, log results. Returns 0 / 2 (hw error).
+
+    With auto_reward, advance one tier in `calibration` per correct trial
+    (capped) and reset to the smallest on wrong / no-go.
+    """
     schedule = TrainingSchedule(active_contrasts=active_contrasts,
                                 expansion_tiers=expansion_tiers)
     logger = TrialLogger(session_dir)
+    tier = 0
     try:
         for trial_index in range(n_trials):
             if hw.error is not None:
                 return 2
             if should_stop and should_stop():
                 break
+            if auto_reward and calibration:
+                cal = calibration[tier]
+                ms_now = int(cal["ms"])
+                ul_now = float(cal["target_ul"])
+            else:
+                ms_now = reward_ms
+                ul_now = reward_ul
+            hw.set_reward_duration(ms_now)
             side, contrast = schedule.next_trial()
             try:
                 result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
-                                   reward_ul=reward_ul, log_frame=logger.log_frame)
+                                   reward_ul=ul_now, error_timeout_s=error_timeout_s,
+                                   log_frame=logger.log_frame)
             except EscapeRequested:
                 break
             schedule.record(result)
             logger.log_trial(result)
             if on_trial_complete:
                 on_trial_complete(result)
+            if auto_reward and calibration:
+                if result.correct:
+                    tier = min(tier + 1, len(calibration) - 1)
+                else:
+                    tier = 0
         schedule.maybe_expand()
         return 0
     finally:
         logger.close()
 
 
-def _write_summary(sd, start, end, args, results):
+def _write_summary(sd, start, end, args, results, calibration=None):
     n = len(results)
     n_correct = sum(1 for r in results if r.correct)
     n_nogo = sum(1 for r in results if r.response == 0)
@@ -335,8 +356,11 @@ def _write_summary(sd, start, end, args, results):
         "end": end.isoformat(timespec="seconds"),
         "duration_s": (end - start).total_seconds(),
         "n_trials_target": args.n_trials,
-        "reward_ms": args.reward_ms,
-        "reward_ul": args.reward_ul,
+        "auto_reward": bool(args.auto_reward),
+        "reward_ms": None if args.auto_reward else args.reward_ms,
+        "reward_ul": None if args.auto_reward else args.reward_ul,
+        "calibration": calibration if args.auto_reward else None,
+        "error_timeout_s": args.error_timeout,
         "water_limit_ul": args.water_limit,
         "gain_deg_per_mm": args.gain,
         "contrasts": args.contrasts,
@@ -353,6 +377,12 @@ def _write_summary(sd, start, end, args, results):
     }
     (sd / "summary.json").write_text(json.dumps(s, indent=2) + "\n")
 
+    if s["auto_reward"]:
+        tiers_ul = [c['target_ul'] for c in calibration]
+        tiers_ms = [c['ms'] for c in calibration]
+        reward_line = f"- Reward: auto-adjust, tiers = {tiers_ul} µL (ms = {tiers_ms})"
+    else:
+        reward_line = f"- Reward: {s['reward_ms']} ms / {s['reward_ul']} µL"
     pct = f"{100 * s['correct_rate']:.1f}%" if s["correct_rate"] is not None else "—"
     rt_s = f"{s['mean_rt_correct_s']:.3f} s" if s["mean_rt_correct_s"] is not None else "—"
     bias_s = f"{s['response_bias']:+.3f}" if s["response_bias"] is not None else "—"
@@ -364,8 +394,9 @@ def _write_summary(sd, start, end, args, results):
         "## Setup",
         "",
         f"- N trials (target): {s['n_trials_target']}",
-        f"- Reward: {s['reward_ms']} ms / {s['reward_ul']} µL",
+        reward_line,
         f"- Water limit: {s['water_limit_ul'] or '—'} µL",
+        f"- Error timeout: {s['error_timeout_s']} s",
         f"- Wheel gain: {s['gain_deg_per_mm']} deg/mm",
         f"- Contrasts: {s['contrasts'] or 'default'}",
         f"- Hardware: {'mock' if s['mock'] else s['port']}, screen {s['screen']}",
@@ -394,9 +425,9 @@ def _runner_main():
     ap.add_argument("--n-trials", type=int, required=True)
     ap.add_argument("--mock", action="store_true")
     ap.add_argument("--port", default="/dev/ttyACM0")
-    ap.add_argument("--reward-ms", type=int, default=REWARD_DEFAULT_MS,
+    ap.add_argument("--reward-ms", type=int, default=50,
                     help="valve open time per correct trial (Teensy control)")
-    ap.add_argument("--reward-ul", type=float, default=REWARD_DEFAULT_UL,
+    ap.add_argument("--reward-ul", type=float, default=3.0,
                     help="water delivered per correct trial in µL (for logging)")
     ap.add_argument("--gain", type=float, default=WHEEL_GAIN_DEG_PER_MM,
                     help="wheel gain in deg/mm (visual deg per mm of wheel surface)")
@@ -408,11 +439,25 @@ def _runner_main():
                     help="display index for the PsychoPy fullscreen window")
     ap.add_argument("--screen-size", type=str, default=None,
                     help="screen resolution WxH for the chosen display, e.g. 1920x1080")
+    ap.add_argument("--error-timeout", type=float, default=ERROR_TIMEOUT_S,
+                    help="error feedback duration in seconds (gabor + white noise)")
     ap.add_argument("--water-limit", type=int, default=None,
                     help="logged in SUMMARY.md; enforcement lives in the GUI")
+    ap.add_argument("--auto-reward", action="store_true",
+                    help="advance reward one tier per correct trial; reset on wrong/no-go")
+    ap.add_argument("--calibration", type=str, default=None,
+                    help="JSON list [{target_ul, ms}, ...]; required with --auto-reward")
     ap.add_argument("--ready", action="store_true",
                     help="open window in standby; wait for a 'start' line on stdin before trials")
     args = ap.parse_args()
+
+    calibration = None
+    if args.calibration:
+        calibration = sorted(json.loads(args.calibration),
+                             key=lambda c: c["target_ul"])
+    if args.auto_reward and not calibration:
+        raise SystemExit("--auto-reward requires --calibration")
+    initial_ms = int(calibration[0]["ms"]) if args.auto_reward else args.reward_ms
 
     gain_deg_per_count = args.gain / COUNTS_PER_MM
     active = (tuple(float(x) for x in args.contrasts.split(","))
@@ -444,7 +489,7 @@ def _runner_main():
         from ibl.io import FakeTeensy, Teensy
         hw = (FakeTeensy(gain_deg_per_count=gain_deg_per_count) if args.mock
               else Teensy(args.port, gain_deg_per_count=gain_deg_per_count))
-        hw.set_reward_duration(args.reward_ms)
+        hw.set_reward_duration(initial_ms)
         win, gabor, sync = build_window(screen=args.screen, screen_size=size_px)
         emit({"type": "ready"})
 
@@ -471,7 +516,7 @@ def _runner_main():
                         hw.set_reward_duration(FLUSH_MS)
                         hw.reward()
                         time.sleep((FLUSH_MS + 20) / 1000.0)
-                        hw.set_reward_duration(args.reward_ms)
+                        hw.set_reward_duration(initial_ms)
                 except queue.Empty:
                     pass
                 win.flip()
@@ -487,13 +532,16 @@ def _runner_main():
         try:
             return run_session(
                 hw, win, gabor, sync, session_dir=sd,
-                n_trials=args.n_trials, reward_ul=args.reward_ul,
+                n_trials=args.n_trials,
+                reward_ms=args.reward_ms, reward_ul=args.reward_ul,
+                error_timeout_s=args.error_timeout,
+                auto_reward=args.auto_reward, calibration=calibration,
                 active_contrasts=active, expansion_tiers=tiers,
                 on_trial_complete=on_trial,
                 should_stop=lambda: stop["flag"],
             )
         finally:
-            _write_summary(sd, start, datetime.datetime.now(), args, results)
+            _write_summary(sd, start, datetime.datetime.now(), args, results, calibration)
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
         emit({"type": "error", "msg": f"{type(exc).__name__}: {exc}"})

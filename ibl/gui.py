@@ -1,6 +1,7 @@
 import json
 import sys
 from collections import defaultdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pyqtgraph as pg
@@ -26,10 +27,21 @@ from PyQt6.QtWidgets import (
 
 from ibl.config import (
     CONTRAST_PRESETS,
-    REWARD_DEFAULT_MS,
-    REWARD_DEFAULT_UL,
+    ERROR_TIMEOUT_S,
     WHEEL_GAIN_DEG_PER_MM,
 )
+
+CALIBRATION_PATH = Path.home() / ".config/ibl-task/calibration.json"
+
+
+def _load_calibration():
+    if not CALIBRATION_PATH.exists():
+        return []
+    try:
+        data = json.loads(CALIBRATION_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return sorted(data.get("targets", []), key=lambda t: t["target_ul"])
 
 
 _DASH = pg.mkPen("gray", style=Qt.PenStyle.DashLine)
@@ -145,9 +157,11 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("POSTECH-NCTRL", "ibl-task")
         self._results = []
         self._proc = None
+        self._calib_proc = None
         self._stdout_buf = b""
         self._last_error = None
         self._build_ui()
+        self._reload_calibration()
         self._restore_settings()
         self._set_state("idle")
 
@@ -204,27 +218,21 @@ class MainWindow(QMainWindow):
         train_form = QFormLayout(train_box)
         train_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Reward valve time (ms) and dispensed water (µL).
+        # Reward dropdown is populated from the calibration file.
         reward_row = QHBoxLayout()
         reward_row.setSpacing(6)
-        self.reward_ms = QSpinBox()
-        self.reward_ms.setRange(1, 200)
-        self.reward_ms.setSuffix(" ms")
-        self.reward_ms.setValue(REWARD_DEFAULT_MS)
-        self.reward_ms.setMaximumWidth(110)
-        self.reward_ul = QDoubleSpinBox()
-        self.reward_ul.setRange(0.1, 50.0)
-        self.reward_ul.setDecimals(2)
-        self.reward_ul.setSingleStep(0.5)
-        self.reward_ul.setSuffix(" µL")
-        self.reward_ul.setValue(REWARD_DEFAULT_UL)
-        self.reward_ul.setMaximumWidth(110)
-        reward_row.addWidget(self.reward_ms)
-        reward_row.addWidget(self.reward_ul)
-        # Manual valve controls — only active in 'ready' standby (window open,
-        # Teensy connected, trials not yet running).
+        self.reward_combo = QComboBox()
+        self.reward_combo.setMinimumWidth(170)
+        reward_row.addWidget(self.reward_combo, 1)
+        self.auto_reward_cb = QCheckBox("Auto")
+        self.auto_reward_cb.setToolTip(
+            "Advance one tier per correct trial (capped at the largest); "
+            "reset to the smallest on wrong/no-go."
+        )
+        self.auto_reward_cb.toggled.connect(self._on_auto_reward_toggled)
+        reward_row.addWidget(self.auto_reward_cb)
         self.free_btn = QPushButton("💧")
-        self.free_btn.setToolTip("Free reward (current ms)")
+        self.free_btn.setToolTip("Free reward (current selection)")
         self.free_btn.setFixedSize(28, 28)
         self.free_btn.clicked.connect(self._on_free_reward)
         self.flush_btn = QPushButton("🚿")
@@ -233,6 +241,10 @@ class MainWindow(QMainWindow):
         self.flush_btn.clicked.connect(self._on_flush)
         reward_row.addWidget(self.free_btn)
         reward_row.addWidget(self.flush_btn)
+        self.calibrate_btn = QPushButton("Calibrate…")
+        self.calibrate_btn.setToolTip("Open the water calibration GUI")
+        self.calibrate_btn.clicked.connect(self._on_calibrate)
+        reward_row.addWidget(self.calibrate_btn)
         train_form.addRow("Reward:", reward_row)
 
         self.gain = QDoubleSpinBox()
@@ -242,6 +254,14 @@ class MainWindow(QMainWindow):
         self.gain.setValue(WHEEL_GAIN_DEG_PER_MM)
         self.gain.setMaximumWidth(120)
         train_form.addRow("Gain (deg/mm):", self.gain)
+        self.error_timeout = QDoubleSpinBox()
+        self.error_timeout.setRange(0.1, 30.0)
+        self.error_timeout.setSingleStep(0.5)
+        self.error_timeout.setDecimals(1)
+        self.error_timeout.setSuffix(" s")
+        self.error_timeout.setValue(ERROR_TIMEOUT_S)
+        self.error_timeout.setMaximumWidth(120)
+        train_form.addRow("Error timeout:", self.error_timeout)
         self.contrast_combo = QComboBox()
         for preset in CONTRAST_PRESETS:
             label = ", ".join(f"{c * 100:g}" for c in preset)
@@ -340,14 +360,15 @@ class MainWindow(QMainWindow):
         return lbl
 
     def _set_state(self, state):
-        """state ∈ {'idle', 'launching', 'ready', 'running', 'stopping'}."""
+        """state ∈ {'idle', 'calibrating', 'launching', 'ready', 'running', 'stopping'}."""
         self._state = state
         self.ready_btn.setEnabled(state == "idle")
+        self.calibrate_btn.setEnabled(state == "idle")
         self.start_btn.setEnabled(state == "ready")
         self.stop_btn.setEnabled(state in ("launching", "ready", "running"))
         self.free_btn.setEnabled(state == "ready")
         self.flush_btn.setEnabled(state == "ready")
-        self._set_inputs_enabled(state == "idle")
+        self._set_inputs_enabled(state in ("idle", "calibrating"))
 
     def _on_free_reward(self):
         if self._proc is not None and self._state == "ready":
@@ -382,6 +403,10 @@ class MainWindow(QMainWindow):
         screens = QApplication.screens()
         scr = screens[screen_idx] if 0 <= screen_idx < len(screens) else screens[0]
         geom = scr.geometry()
+        target = self.reward_combo.currentData()
+        if target is None:
+            self._set_status("No calibration loaded — click Calibrate first.")
+            return
         argv = [
             "-m",
             "ibl.task",
@@ -391,12 +416,10 @@ class MainWindow(QMainWindow):
             str(self.n_trials.value()),
             "--water-limit",
             str(self.water_limit.value()),
-            "--reward-ms",
-            str(self.reward_ms.value()),
-            "--reward-ul",
-            str(self.reward_ul.value()),
             "--gain",
             str(self.gain.value()),
+            "--error-timeout",
+            str(self.error_timeout.value()),
             "--contrasts",
             ",".join(str(c) for c in contrasts),
             "--screen",
@@ -405,6 +428,20 @@ class MainWindow(QMainWindow):
             f"{geom.width()}x{geom.height()}",
             "--ready",
         ]
+        if self.auto_reward_cb.isChecked():
+            argv += [
+                "--auto-reward",
+                "--calibration",
+                json.dumps([
+                    {"target_ul": t["target_ul"], "ms": t["ms"]}
+                    for t in self._calibration
+                ]),
+            ]
+        else:
+            argv += [
+                "--reward-ms", str(int(target["ms"])),
+                "--reward-ul", str(target["target_ul"]),
+            ]
         if self.mock_cb.isChecked():
             argv.append("--mock")
         else:
@@ -521,6 +558,15 @@ class MainWindow(QMainWindow):
         )
         water_ul = sum(r.reward_ul for r in self._results)
         self.water_label.setText(f"{water_ul:.1f} µL  ({n_correct} rewards)")
+        # Mirror the per-trial reward tier in the dropdown.
+        target_ul = float(result.reward_ul)
+        if target_ul > 0:
+            for i in range(self.reward_combo.count()):
+                if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-6:
+                    self.reward_combo.setCurrentIndex(i)
+                    break
+        elif self.auto_reward_cb.isChecked() and self.reward_combo.count() > 0:
+            self.reward_combo.setCurrentIndex(0)
         self._refresh_all_plots()
         if water_ul >= self.water_limit.value() and self._state == "running":
             self._set_status(
@@ -548,13 +594,50 @@ class MainWindow(QMainWindow):
             self.mock_cb,
             self.n_trials,
             self.water_limit,
-            self.reward_ms,
-            self.reward_ul,
+            self.auto_reward_cb,
             self.gain,
+            self.error_timeout,
             self.contrast_combo,
             self.display,
         ):
             w.setEnabled(enabled)
+        self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
+
+    def _reload_calibration(self):
+        self._calibration = _load_calibration()
+        prev = self.reward_combo.currentData()
+        self.reward_combo.clear()
+        for t in self._calibration:
+            self.reward_combo.addItem(f"{t['target_ul']:g} µL  ({t['ms']} ms)", t)
+        if prev is not None:
+            for i in range(self.reward_combo.count()):
+                if abs(self.reward_combo.itemData(i)["target_ul"] - prev["target_ul"]) < 1e-9:
+                    self.reward_combo.setCurrentIndex(i)
+                    break
+        if self.auto_reward_cb.isChecked() and self.reward_combo.count() > 0:
+            self.reward_combo.setCurrentIndex(0)
+        if not self._calibration:
+            self._set_status("No calibration found — click Calibrate to set up rewards.")
+
+    def _on_auto_reward_toggled(self, checked):
+        self.reward_combo.setEnabled(not checked and self._state == "idle")
+        if checked and self.reward_combo.count() > 0:
+            self.reward_combo.setCurrentIndex(0)
+
+    def _on_calibrate(self):
+        if self._calib_proc is not None or self._proc is not None:
+            return
+        self._calib_proc = QProcess(self)
+        self._calib_proc.finished.connect(self._on_calibrate_finished)
+        self._calib_proc.start(sys.executable, ["-m", "ibl.calibrate"])
+        self._set_state("calibrating")
+        self._set_status("Calibration GUI open — close it to resume.")
+
+    def _on_calibrate_finished(self, *_):
+        self._calib_proc = None
+        self._reload_calibration()
+        self._set_state("idle")
+        self._set_status("Calibration reloaded.")
 
     # ---- persistence ----
 
@@ -565,9 +648,12 @@ class MainWindow(QMainWindow):
         s.setValue("mock", self.mock_cb.isChecked())
         s.setValue("n_trials", self.n_trials.value())
         s.setValue("water_limit", self.water_limit.value())
-        s.setValue("reward_ms", self.reward_ms.value())
-        s.setValue("reward_ul", self.reward_ul.value())
+        target = self.reward_combo.currentData()
+        if target is not None:
+            s.setValue("reward_target_ul", float(target["target_ul"]))
+        s.setValue("auto_reward", self.auto_reward_cb.isChecked())
         s.setValue("gain", self.gain.value())
+        s.setValue("error_timeout", self.error_timeout.value())
         s.setValue("contrast_index", self.contrast_combo.currentIndex())
         s.setValue("display_index", self.display.currentIndex())
         s.setValue("geometry", self.saveGeometry())
@@ -579,9 +665,15 @@ class MainWindow(QMainWindow):
         self.mock_cb.setChecked(s.value("mock", False, type=bool))
         self.n_trials.setValue(s.value("n_trials", 100, type=int))
         self.water_limit.setValue(s.value("water_limit", 1000, type=int))
-        self.reward_ms.setValue(s.value("reward_ms", REWARD_DEFAULT_MS, type=int))
-        self.reward_ul.setValue(s.value("reward_ul", REWARD_DEFAULT_UL, type=float))
+        if s.contains("reward_target_ul"):
+            target_ul = s.value("reward_target_ul", type=float)
+            for i in range(self.reward_combo.count()):
+                if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-9:
+                    self.reward_combo.setCurrentIndex(i)
+                    break
+        self.auto_reward_cb.setChecked(s.value("auto_reward", False, type=bool))
         self.gain.setValue(s.value("gain", WHEEL_GAIN_DEG_PER_MM, type=float))
+        self.error_timeout.setValue(s.value("error_timeout", ERROR_TIMEOUT_S, type=float))
         ci = s.value("contrast_index", 0, type=int)
         if 0 <= ci < self.contrast_combo.count():
             self.contrast_combo.setCurrentIndex(ci)
