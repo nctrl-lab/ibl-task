@@ -18,7 +18,7 @@ QUIESCENCE_MEAN_S = 0.35  # mean of x ~ Exp; x truncated to [0, MAX-MIN]
 QUIESCENCE_STILL_BAND_DEG = 2.0
 RESPONSE_WINDOW_S = 60.0
 OPEN_LOOP_HOLD_S = 1.0  # correct feedback (gabor at center)
-ERROR_TIMEOUT_S = 2.0  # error feedback (gabor + white noise)
+ERROR_TIMEOUT_S = 4.0  # error feedback (gabor + white noise)
 ITI_S = 0.5  # IBL: fixed 0.5s after stimulus offset
 
 # Wheel / encoder
@@ -29,10 +29,8 @@ WHEEL_GAIN_DEG_PER_MM = 4.0
 COUNTS_PER_MM = ENCODER_PPR * 4 / (math.pi * WHEEL_DIAMETER_MM)
 GAIN_DEG_PER_COUNT = WHEEL_GAIN_DEG_PER_MM / COUNTS_PER_MM
 
-# Reward — valve-open time (ms) and dispensed water (µL).
-REWARD_DEFAULT_MS = 50
-REWARD_DEFAULT_UL = 3.0
-MAX_VALVE_MS = 200
+# Reward valve safety clamp (must match teensy.ino MAX_REWARD).
+MAX_VALVE_MS = 1000
 
 # Schedule
 INITIAL_CONTRASTS = (1.0, 0.5)

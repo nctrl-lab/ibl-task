@@ -65,7 +65,7 @@ const unsigned long ENC_INTERVAL    = 1000;     // 1 kHz wheel sampling
 const unsigned long HUMAN_INTERVAL  = 100000;   // 10 Hz human-readable print
 const unsigned long TONE_DURATION   = 100000;
 const unsigned long NOISE_DURATION  = 500000;
-const unsigned long MAX_REWARD      = 200000;   // valve safety clamp
+const unsigned long MAX_REWARD      = 1000000;  // valve safety clamp (1 s)
 
 unsigned long now;
 unsigned long encTime, humanTime;
@@ -217,6 +217,13 @@ void checkCommand() {
     }
   }
 
+  if (c == 'r') {
+    rewardOn();
+    rewardTime = now;
+    valveState = true;
+    return;
+  }
+
   if (!streaming) return;
 
   switch (c) {
@@ -225,11 +232,6 @@ void checkCommand() {
     case 'c': cueOn(); toneOn();          break;
     case 'C': cueOff();                   break;
     case 'n': if (!noiseState) noiseOn(); break;
-    case 'r':
-      rewardOn();
-      rewardTime = now;
-      valveState = true;
-      break;
   }
 }
 
@@ -257,14 +259,13 @@ void setup() {
 }
 
 void loop() {
+  now = micros();
+  checkReward();
   if (streaming) {
-    now = micros();
     checkEncoder();
-    checkReward();
     checkTone();
     checkNoise();
   } else if (humanStreaming) {
-    now = micros();
     checkHumanEncoder();
   }
   checkCommand();
