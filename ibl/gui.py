@@ -509,6 +509,8 @@ class MainWindow(QMainWindow):
         elif kind == "running":
             self._set_state("running")
             self._set_status(f"Running session for {self.subject.text().strip()}.")
+        elif kind == "reward":
+            self._sync_reward_combo(msg["ul"])
         elif kind == "trial":
             self._on_trial_complete(
                 SimpleNamespace(**{k: v for k, v in msg.items() if k != "type"})
@@ -534,6 +536,12 @@ class MainWindow(QMainWindow):
 
     # ---- per-trial UI update ----
 
+    def _sync_reward_combo(self, target_ul):
+        for i in range(self.reward_combo.count()):
+            if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-6:
+                self.reward_combo.setCurrentIndex(i)
+                return
+
     def _on_trial_complete(self, result):
         self._results.append(result)
         n = len(self._results)
@@ -558,15 +566,6 @@ class MainWindow(QMainWindow):
         )
         water_ul = sum(r.reward_ul for r in self._results)
         self.water_label.setText(f"{water_ul:.1f} µL  ({n_correct} rewards)")
-        # Mirror the per-trial reward tier in the dropdown.
-        target_ul = float(result.reward_ul)
-        if target_ul > 0:
-            for i in range(self.reward_combo.count()):
-                if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-6:
-                    self.reward_combo.setCurrentIndex(i)
-                    break
-        elif self.auto_reward_cb.isChecked() and self.reward_combo.count() > 0:
-            self.reward_combo.setCurrentIndex(0)
         self._refresh_all_plots()
         if water_ul >= self.water_limit.value() and self._state == "running":
             self._set_status(

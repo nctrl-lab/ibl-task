@@ -295,7 +295,8 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 reward_ms, reward_ul, error_timeout_s,
                 auto_reward=False, calibration=None,
                 active_contrasts=None, expansion_tiers=None,
-                on_trial_complete=None, should_stop=None):
+                on_trial_complete=None, on_reward_set=None,
+                should_stop=None):
     """Loop trials, log results. Returns 0 / 2 (hw error).
 
     With auto_reward, advance one tier in `calibration` per correct trial
@@ -319,6 +320,8 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 ms_now = reward_ms
                 ul_now = reward_ul
             hw.set_reward_duration(ms_now)
+            if on_reward_set:
+                on_reward_set(ms_now, ul_now)
             side, contrast = schedule.next_trial()
             try:
                 result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
@@ -529,6 +532,8 @@ def _runner_main():
         def on_trial(r):
             results.append(r)
             emit({"type": "trial", **dataclasses.asdict(r)})
+        def on_reward(ms, ul):
+            emit({"type": "reward", "ms": ms, "ul": ul})
         try:
             return run_session(
                 hw, win, gabor, sync, session_dir=sd,
@@ -538,6 +543,7 @@ def _runner_main():
                 auto_reward=args.auto_reward, calibration=calibration,
                 active_contrasts=active, expansion_tiers=tiers,
                 on_trial_complete=on_trial,
+                on_reward_set=on_reward,
                 should_stop=lambda: stop["flag"],
             )
         finally:
