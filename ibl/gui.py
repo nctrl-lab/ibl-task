@@ -29,6 +29,9 @@ from PyQt6.QtWidgets import (
 from ibl.config import (
     CONTRAST_PRESETS,
     ERROR_TIMEOUT_S,
+    ITI_MAX_S,
+    ITI_MEAN_S,
+    ITI_MIN_S,
     WHEEL_GAIN_DEG_PER_MM,
 )
 
@@ -278,6 +281,20 @@ class MainWindow(QMainWindow):
         self.error_timeout.setValue(ERROR_TIMEOUT_S)
         self.error_timeout.setMaximumWidth(120)
         train_form.addRow("Error timeout:", self.error_timeout)
+        self.iti_min, self.iti_mean, self.iti_max = (
+            self._make_iti_spin(ITI_MIN_S),
+            self._make_iti_spin(ITI_MEAN_S),
+            self._make_iti_spin(ITI_MAX_S),
+        )
+        iti_row = QHBoxLayout()
+        iti_row.setContentsMargins(0, 0, 0, 0)
+        iti_row.setSpacing(4)
+        for lbl, sp in (("min", self.iti_min), ("mean", self.iti_mean), ("max", self.iti_max)):
+            iti_row.addWidget(QLabel(lbl))
+            iti_row.addWidget(sp)
+        iti_w = QWidget()
+        iti_w.setLayout(iti_row)
+        train_form.addRow("ITI (s):", iti_w)
         self.contrast_combo = QComboBox()
         for preset in CONTRAST_PRESETS:
             label = ", ".join(f"{c * 100:g}" for c in preset)
@@ -445,6 +462,12 @@ class MainWindow(QMainWindow):
             str(self.gain.value()),
             "--error-timeout",
             str(self.error_timeout.value()),
+            "--iti-min",
+            str(self.iti_min.value()),
+            "--iti-mean",
+            str(self.iti_mean.value()),
+            "--iti-max",
+            str(self.iti_max.value()),
             "--contrasts",
             ",".join(str(c) for c in contrasts),
             "--screen",
@@ -628,11 +651,23 @@ class MainWindow(QMainWindow):
             self.auto_reward_cb,
             self.gain,
             self.error_timeout,
+            self.iti_min,
+            self.iti_mean,
+            self.iti_max,
             self.contrast_combo,
             self.display,
         ):
             w.setEnabled(enabled)
         self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
+
+    def _make_iti_spin(self, default):
+        sp = QDoubleSpinBox()
+        sp.setRange(0.0, 60.0)
+        sp.setSingleStep(0.1)
+        sp.setSuffix(" s")
+        sp.setValue(default)
+        sp.setMaximumWidth(80)
+        return sp
 
     def _reload_calibration(self):
         self._calibration = _load_calibration()
@@ -686,6 +721,9 @@ class MainWindow(QMainWindow):
         s.setValue("auto_reward", self.auto_reward_cb.isChecked())
         s.setValue("gain", self.gain.value())
         s.setValue("error_timeout", self.error_timeout.value())
+        s.setValue("iti_min", self.iti_min.value())
+        s.setValue("iti_mean", self.iti_mean.value())
+        s.setValue("iti_max", self.iti_max.value())
         s.setValue("contrast_index", self.contrast_combo.currentIndex())
         s.setValue("display_index", self.display.currentIndex())
         s.setValue("geometry", self.saveGeometry())
@@ -707,6 +745,9 @@ class MainWindow(QMainWindow):
         self.auto_reward_cb.setChecked(s.value("auto_reward", False, type=bool))
         self.gain.setValue(s.value("gain", WHEEL_GAIN_DEG_PER_MM, type=float))
         self.error_timeout.setValue(s.value("error_timeout", ERROR_TIMEOUT_S, type=float))
+        self.iti_min.setValue(s.value("iti_min", ITI_MIN_S, type=float))
+        self.iti_mean.setValue(s.value("iti_mean", ITI_MEAN_S, type=float))
+        self.iti_max.setValue(s.value("iti_max", ITI_MAX_S, type=float))
         ci = s.value("contrast_index", 0, type=int)
         if 0 <= ci < self.contrast_combo.count():
             self.contrast_combo.setCurrentIndex(ci)

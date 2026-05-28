@@ -17,7 +17,8 @@ import numpy as np
 
 from ibl.config import (
     COUNTER_WINDOW_TRIALS, COUNTS_PER_MM, ERROR_TIMEOUT_S, EXPANSION_ACCURACY,
-    EXPANSION_MIN_TRIALS, EXPANSION_TIERS, INITIAL_CONTRASTS, ITI_S,
+    EXPANSION_MIN_TRIALS, EXPANSION_TIERS, INITIAL_CONTRASTS,
+    ITI_MAX_S, ITI_MEAN_S, ITI_MIN_S,
     OPEN_LOOP_HOLD_S, ORI_DEG, QUIESCENCE_MAX_S, QUIESCENCE_MEAN_S,
     QUIESCENCE_MIN_S, QUIESCENCE_STILL_BAND_DEG, RESPONSE_WINDOW_S,
     RIG_DISTANCE_CM, RIG_RESOLUTION,
@@ -215,7 +216,8 @@ def _wait(duration: float, flip: Callable[[], None]) -> None:
 
 
 def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
-              reward_ul, error_timeout_s, log_frame=None):
+              reward_ul, error_timeout_s,
+              iti_min_s, iti_mean_s, iti_max_s, log_frame=None):
     def flip():
         win.flip()
         if log_frame is not None:
@@ -283,18 +285,26 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
     hw.trial_off()
     t_end = time.monotonic()
 
-    _wait(ITI_S, flip)
+    iti_dur = iti_min_s
+    if iti_max_s > iti_min_s and iti_mean_s > 0:
+        while True:
+            x = random.expovariate(1.0 / iti_mean_s)
+            if x <= iti_max_s - iti_min_s:
+                iti_dur = iti_min_s + x
+                break
+    _wait(iti_dur, flip)
 
     return TrialResult(
         trial_index=trial_index, side=side, contrast=contrast, response=response,
         correct=correct, response_time_s=response_time_s,
         t_start=t_start, t_cue=t_cue, t_response=t_response, t_end=t_end,
-        iti_s=ITI_S, reward_ul=dispensed_ul,
+        iti_s=iti_dur, reward_ul=dispensed_ul,
     )
 
 
 def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 reward_ms, reward_ul, error_timeout_s,
+                iti_min_s, iti_mean_s, iti_max_s,
                 auto_reward=False, calibration=None,
                 active_contrasts=None, expansion_tiers=None,
                 on_trial_complete=None, should_stop=None):
@@ -325,6 +335,8 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
             try:
                 result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
                                    reward_ul=ul_now, error_timeout_s=error_timeout_s,
+                                   iti_min_s=iti_min_s, iti_mean_s=iti_mean_s,
+                                   iti_max_s=iti_max_s,
                                    log_frame=logger.log_frame)
             except EscapeRequested:
                 break
@@ -363,6 +375,9 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         "reward_ul": None if args.auto_reward else args.reward_ul,
         "calibration": calibration if args.auto_reward else None,
         "error_timeout_s": args.error_timeout,
+        "iti_min_s": args.iti_min,
+        "iti_mean_s": args.iti_mean,
+        "iti_max_s": args.iti_max,
         "water_limit_ul": args.water_limit,
         "gain_deg_per_mm": args.gain,
         "contrasts": args.contrasts,
@@ -399,6 +414,7 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         reward_line,
         f"- Water limit: {s['water_limit_ul'] or '—'} µL",
         f"- Error timeout: {s['error_timeout_s']} s",
+        f"- ITI: min {s['iti_min_s']} / mean {s['iti_mean_s']} / max {s['iti_max_s']} s",
         f"- Wheel gain: {s['gain_deg_per_mm']} deg/mm",
         f"- Contrasts: {s['contrasts'] or 'default'}",
         f"- Hardware: {'mock' if s['mock'] else s['port']}, screen {s['screen']}",
@@ -443,6 +459,9 @@ def _runner_main():
                     help="screen resolution WxH for the chosen display, e.g. 1920x1080")
     ap.add_argument("--error-timeout", type=float, default=ERROR_TIMEOUT_S,
                     help="error feedback duration in seconds (gabor + white noise)")
+    ap.add_argument("--iti-min", type=float, default=ITI_MIN_S)
+    ap.add_argument("--iti-mean", type=float, default=ITI_MEAN_S)
+    ap.add_argument("--iti-max", type=float, default=ITI_MAX_S)
     ap.add_argument("--water-limit", type=int, default=None,
                     help="logged in SUMMARY.md; enforcement lives in the GUI")
     ap.add_argument("--data-dir", type=str, default=None,
@@ -552,6 +571,8 @@ def _runner_main():
                 n_trials=args.n_trials,
                 reward_ms=args.reward_ms, reward_ul=args.reward_ul,
                 error_timeout_s=args.error_timeout,
+                iti_min_s=args.iti_min, iti_mean_s=args.iti_mean,
+                iti_max_s=args.iti_max,
                 auto_reward=args.auto_reward, calibration=calibration,
                 active_contrasts=active, expansion_tiers=tiers,
                 on_trial_complete=on_trial,
