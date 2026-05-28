@@ -473,6 +473,13 @@ class MainWindow(QMainWindow):
         self._proc.finished.connect(self._on_finished)
         self._proc.errorOccurred.connect(self._on_proc_error)
         self._proc.start(sys.executable, argv)
+        if sys.platform == "win32":
+            self._proc.waitForStarted(2000)
+            try:
+                import ctypes
+                ctypes.windll.user32.AllowSetForegroundWindow(int(self._proc.processId()))
+            except Exception:
+                pass
 
         self._set_state("launching")
         self._set_status(

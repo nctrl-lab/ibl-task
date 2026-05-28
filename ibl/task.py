@@ -181,7 +181,7 @@ def build_window(screen=0):
     mon = monitors.Monitor("ibl_rig", width=RIG_WIDTH_CM, distance=RIG_DISTANCE_CM)
     mon.setSizePix(RIG_RESOLUTION)  # placeholder; PsychoPy splash needs sizePix pre-Window
     win = visual.Window(monitor=mon, units="deg", color=(0, 0, 0),
-                        fullscr=True, screen=screen)
+                        fullscr=True, screen=screen, checkTiming=False)
     mon.setSizePix(tuple(win.size))
     gabor = visual.GratingStim(
         win=win, tex="sin", mask="gauss", units="deg",
