@@ -471,6 +471,8 @@ class MainWindow(QMainWindow):
         self._proc.readyReadStandardOutput.connect(self._on_stdout)
         self._proc.finished.connect(self._on_finished)
         self._proc.errorOccurred.connect(self._on_proc_error)
+        if sys.platform == "win32":
+            self.showMinimized()
         self._proc.start(sys.executable, argv)
         if sys.platform == "win32":
             self._proc.waitForStarted(2000)
@@ -520,6 +522,8 @@ class MainWindow(QMainWindow):
     def _handle_runner_message(self, msg):
         kind = msg.get("type")
         if kind == "ready":
+            if sys.platform == "win32":
+                self.showNormal()
             self._set_state("ready")
             self._set_status(
                 f"Standby — window open. Click Start to begin trials for "
