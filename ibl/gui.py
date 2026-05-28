@@ -425,6 +425,7 @@ class MainWindow(QMainWindow):
             self._set_status("No calibration loaded — click Calibrate first.")
             return
         argv = [
+            "-u",
             "-m",
             "ibl.task",
             "--subject",
@@ -663,7 +664,7 @@ class MainWindow(QMainWindow):
             return
         self._calib_proc = QProcess(self)
         self._calib_proc.finished.connect(self._on_calibrate_finished)
-        self._calib_proc.start(sys.executable, ["-m", "ibl.calibrate"])
+        self._calib_proc.start(sys.executable, ["-u", "-m", "ibl.calibrate"])
         self._set_state("calibrating")
         self._set_status("Calibration GUI open — close it to resume.")
 

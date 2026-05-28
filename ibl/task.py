@@ -436,8 +436,8 @@ def _write_summary(sd, start, end, args, results, calibration=None):
 def _runner_main():
     import argparse, dataclasses, json, queue, signal, sys, threading, traceback
 
-    def emit(payload):
-        sys.stdout.write(json.dumps(payload) + "\n"); sys.stdout.flush()
+    def emit(payload, _out=sys.stdout):
+        _out.write(json.dumps(payload) + "\n"); _out.flush()
 
     ap = argparse.ArgumentParser(prog="ibl.task")
     ap.add_argument("--subject", required=True)
