@@ -21,7 +21,7 @@ from ibl.config import (
     ITI_MAX_S, ITI_MEAN_S, ITI_MIN_S,
     OPEN_LOOP_HOLD_S, ORI_DEG, QUIESCENCE_MAX_S, QUIESCENCE_MEAN_S,
     QUIESCENCE_MIN_S, QUIESCENCE_STILL_BAND_DEG, RESPONSE_WINDOW_S,
-    RIG_DISTANCE_CM, RIG_RESOLUTION,
+    RIG_DISTANCE_CM,
     RIG_WIDTH_CM, SF_CPD, SIZE_DEG, STIM_START_OFFSET_DEG, SYNC_PIX,
     WHEEL_GAIN_DEG_PER_MM,
 )
@@ -174,15 +174,11 @@ class EscapeRequested(Exception):
     pass
 
 
-def build_window(screen=0, screen_size=None):
-    """Open the PsychoPy Window, GratingStim, and photodiode-sync square.
-    screen_size, if given, overrides RIG_RESOLUTION (and silences PsychoPy's
-    "expected 800x600" warning by matching the actual screen)."""
-    # Lazy import: PsychoPy hijacks --help if imported at module level.
+def build_window(screen=0):
+    """Open the PsychoPy Window, GratingStim, and photodiode-sync square."""
     from psychopy import monitors, visual
 
     mon = monitors.Monitor("ibl_rig", width=RIG_WIDTH_CM, distance=RIG_DISTANCE_CM)
-    mon.setSizePix(tuple(screen_size) if screen_size else RIG_RESOLUTION)
     win = visual.Window(monitor=mon, units="deg", color=(0, 0, 0),
                         fullscr=True, screen=screen)
     mon.setSizePix(tuple(win.size))
@@ -456,8 +452,6 @@ def _runner_main():
                     help="comma-separated expansion tiers, e.g. 0.25,0.125,0.0625")
     ap.add_argument("--screen", type=int, default=0,
                     help="display index for the PsychoPy fullscreen window")
-    ap.add_argument("--screen-size", type=str, default=None,
-                    help="screen resolution WxH for the chosen display, e.g. 1920x1080")
     ap.add_argument("--error-timeout", type=float, default=ERROR_TIMEOUT_S,
                     help="error feedback duration in seconds (gabor + white noise)")
     ap.add_argument("--iti-min", type=float, default=ITI_MIN_S)
@@ -486,11 +480,6 @@ def _runner_main():
               if args.contrasts else None)
     tiers = (tuple(float(x) for x in args.contrast_tiers.split(","))
              if args.contrast_tiers else None)
-    size_px = None
-    if args.screen_size:
-        w, h = args.screen_size.lower().split("x")
-        size_px = (int(w), int(h))
-
     stop = {"flag": False}
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.update(flag=True))
@@ -512,7 +501,7 @@ def _runner_main():
         hw = (FakeTeensy(gain_deg_per_count=gain_deg_per_count) if args.mock
               else Teensy(args.port, gain_deg_per_count=gain_deg_per_count))
         hw.set_reward_duration(initial_ms)
-        win, gabor, sync = build_window(screen=args.screen, screen_size=size_px)
+        win, gabor, sync = build_window(screen=args.screen)
         emit({"type": "ready"})
 
         if args.ready:

@@ -424,7 +424,6 @@ class MainWindow(QMainWindow):
         screens = QApplication.screens()
         qt_idx = self.display.currentIndex()
         scr = screens[qt_idx] if 0 <= qt_idx < len(screens) else screens[0]
-        geom = scr.geometry()
         target = self.reward_combo.currentData()
         if target is None:
             self._set_status("No calibration loaded — click Calibrate first.")
@@ -453,8 +452,6 @@ class MainWindow(QMainWindow):
             ",".join(str(c) for c in contrasts),
             "--screen",
             str(screen_idx),
-            "--screen-size",
-            f"{geom.width()}x{geom.height()}",
             "--ready",
         ]
         if self.auto_reward_cb.isChecked():
