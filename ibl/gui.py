@@ -467,9 +467,8 @@ class MainWindow(QMainWindow):
             argv += ["--port", self.port.text().strip()]
 
         self._proc = QProcess(self)
-        self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.ForwardedErrorChannel)
         self._proc.readyReadStandardOutput.connect(self._on_stdout)
-        self._proc.readyReadStandardError.connect(self._on_stderr)
         self._proc.finished.connect(self._on_finished)
         self._proc.errorOccurred.connect(self._on_proc_error)
         self._proc.start(sys.executable, argv)
@@ -517,12 +516,6 @@ class MainWindow(QMainWindow):
                 sys.stderr.write(f"[runner stdout, not JSON] {line!r}\n")
                 continue
             self._handle_runner_message(msg)
-
-    def _on_stderr(self) -> None:
-        assert self._proc is not None
-        chunk = bytes(self._proc.readAllStandardError())
-        sys.stderr.write(chunk.decode("utf-8", errors="replace"))
-        sys.stderr.flush()
 
     def _handle_runner_message(self, msg):
         kind = msg.get("type")
