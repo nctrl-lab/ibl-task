@@ -1,11 +1,13 @@
 import json
+import subprocess
 import sys
+import threading
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QProcess, QSettings
+from PyQt6.QtCore import Qt, QObject, QProcess, QSettings, pyqtSignal
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
@@ -45,6 +47,84 @@ def _load_calibration():
     except (OSError, json.JSONDecodeError):
         return []
     return sorted(data.get("targets", []), key=lambda t: t["target_ul"])
+
+
+class _ProcBridge(QObject):
+    """subprocess.Popen with QProcess-shaped surface. Needed on Windows
+    where pyglet's Window init hangs under QProcess (no console child).
+    CREATE_NEW_CONSOLE gives the child a real console."""
+
+    line_received = pyqtSignal(str)
+    finished = pyqtSignal(int)
+    error = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._proc = None
+
+    def start(self, executable, argv):
+        flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        try:
+            self._proc = subprocess.Popen(
+                [executable, *argv],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,
+                creationflags=flags,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except Exception as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+            return
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self):
+        try:
+            for line in self._proc.stdout:
+                line = line.rstrip("\n")
+                if line:
+                    self.line_received.emit(line)
+        except Exception:
+            pass
+        rc = self._proc.wait()
+        self.finished.emit(rc)
+
+    def write(self, data):
+        if not self._proc or not self._proc.stdin:
+            return
+        try:
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", errors="replace")
+            self._proc.stdin.write(data)
+            self._proc.stdin.flush()
+        except Exception:
+            pass
+
+    def terminate(self):
+        if self._proc:
+            try: self._proc.terminate()
+            except Exception: pass
+
+    def kill(self):
+        if self._proc:
+            try: self._proc.kill()
+            except Exception: pass
+
+    def processId(self):
+        return self._proc.pid if self._proc else 0
+
+    def waitForFinished(self, msec):
+        if not self._proc:
+            return True
+        try:
+            self._proc.wait(timeout=msec / 1000.0)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
 
 
 _DASH = pg.mkPen("gray", style=Qt.PenStyle.DashLine)
@@ -161,7 +241,6 @@ class MainWindow(QMainWindow):
         self._results = []
         self._proc = None
         self._calib_proc = None
-        self._stdout_buf = b""
         self._last_error = None
         self._build_ui()
         self._reload_calibration()
@@ -406,7 +485,6 @@ class MainWindow(QMainWindow):
             return
         self._save_settings()
         self._results = []
-        self._stdout_buf = b""
         self._last_error = None
         self._refresh_all_plots()
         self.trial_value.setText("—")
@@ -466,21 +544,14 @@ class MainWindow(QMainWindow):
         else:
             argv += ["--port", self.port.text().strip()]
 
-        self._proc = QProcess(self)
-        self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.ForwardedErrorChannel)
-        self._proc.readyReadStandardOutput.connect(self._on_stdout)
+        self._proc = _ProcBridge(self)
+        self._proc.line_received.connect(self._on_line)
         self._proc.finished.connect(self._on_finished)
-        self._proc.errorOccurred.connect(self._on_proc_error)
+        self._proc.error.connect(self._on_proc_error)
         if sys.platform == "win32":
-            def _proc_modifier(args):
-                CREATE_NEW_CONSOLE = 0x00000010
-                CREATE_NO_WINDOW = 0x08000000
-                args.flags = (args.flags & ~CREATE_NO_WINDOW) | CREATE_NEW_CONSOLE
-            self._proc.setCreateProcessArgumentsModifier(_proc_modifier)
             self.showMinimized()
         self._proc.start(sys.executable, argv)
         if sys.platform == "win32":
-            self._proc.waitForStarted(2000)
             try:
                 import ctypes
                 ctypes.windll.user32.AllowSetForegroundWindow(int(self._proc.processId()))
@@ -509,20 +580,16 @@ class MainWindow(QMainWindow):
 
     # ---- subprocess I/O ----
 
-    def _on_stdout(self) -> None:
-        assert self._proc is not None
-        self._stdout_buf += bytes(self._proc.readAllStandardOutput())
-        while b"\n" in self._stdout_buf:
-            line, self._stdout_buf = self._stdout_buf.split(b"\n", 1)
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                sys.stderr.write(f"[runner stdout, not JSON] {line!r}\n")
-                continue
-            self._handle_runner_message(msg)
+    def _on_line(self, line):
+        line = line.strip()
+        if not line:
+            return
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            sys.stderr.write(f"[runner stdout, not JSON] {line!r}\n")
+            return
+        self._handle_runner_message(msg)
 
     def _handle_runner_message(self, msg):
         kind = msg.get("type")
@@ -548,10 +615,10 @@ class MainWindow(QMainWindow):
             self._set_status(f"ERROR: {self._last_error}")
 
     def _on_proc_error(self, err) -> None:
-        self._last_error = f"QProcess error: {err}"
+        self._last_error = f"Process error: {err}"
         self._set_status(f"ERROR: {self._last_error}")
 
-    def _on_finished(self, exit_code, exit_status):
+    def _on_finished(self, exit_code):
         self._proc = None
         self._set_state("idle")
         if self._last_error is not None:
