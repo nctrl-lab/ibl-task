@@ -19,9 +19,7 @@ QUIESCENCE_STILL_BAND_DEG = 2.0
 RESPONSE_WINDOW_S = 60.0
 OPEN_LOOP_HOLD_S = 1.0  # correct feedback (gabor at center)
 ERROR_TIMEOUT_S = 4.0  # error feedback (gabor + white noise)
-ITI_MIN_S = 0.5
-ITI_MEAN_S = 2.0
-ITI_MAX_S = 5.0
+ITI_S = 0.5  # IBL: fixed 0.5s after stimulus offset
 
 # Wheel / encoder
 STIM_START_OFFSET_DEG = 35.0

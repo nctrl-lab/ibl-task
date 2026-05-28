@@ -1,19 +1,18 @@
 import json
-import subprocess
 import sys
-import threading
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QObject, QProcess, QSettings, pyqtSignal
+from PyQt6.QtCore import Qt, QProcess, QSettings
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -30,13 +29,11 @@ from PyQt6.QtWidgets import (
 from ibl.config import (
     CONTRAST_PRESETS,
     ERROR_TIMEOUT_S,
-    ITI_MAX_S,
-    ITI_MEAN_S,
-    ITI_MIN_S,
     WHEEL_GAIN_DEG_PER_MM,
 )
 
 CALIBRATION_PATH = Path.home() / ".config/ibl-task/calibration.json"
+DEFAULT_DATA_DIR = Path.home() / "ibl-data"
 
 
 def _load_calibration():
@@ -47,84 +44,6 @@ def _load_calibration():
     except (OSError, json.JSONDecodeError):
         return []
     return sorted(data.get("targets", []), key=lambda t: t["target_ul"])
-
-
-class _ProcBridge(QObject):
-    """subprocess.Popen with QProcess-shaped surface. Needed on Windows
-    where pyglet's Window init hangs under QProcess (no console child).
-    CREATE_NEW_CONSOLE gives the child a real console."""
-
-    line_received = pyqtSignal(str)
-    finished = pyqtSignal(int)
-    error = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._proc = None
-
-    def start(self, executable, argv):
-        flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
-        try:
-            self._proc = subprocess.Popen(
-                [executable, *argv],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=None,
-                creationflags=flags,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-        except Exception as exc:
-            self.error.emit(f"{type(exc).__name__}: {exc}")
-            return
-        threading.Thread(target=self._reader, daemon=True).start()
-
-    def _reader(self):
-        try:
-            for line in self._proc.stdout:
-                line = line.rstrip("\n")
-                if line:
-                    self.line_received.emit(line)
-        except Exception:
-            pass
-        rc = self._proc.wait()
-        self.finished.emit(rc)
-
-    def write(self, data):
-        if not self._proc or not self._proc.stdin:
-            return
-        try:
-            if isinstance(data, bytes):
-                data = data.decode("utf-8", errors="replace")
-            self._proc.stdin.write(data)
-            self._proc.stdin.flush()
-        except Exception:
-            pass
-
-    def terminate(self):
-        if self._proc:
-            try: self._proc.terminate()
-            except Exception: pass
-
-    def kill(self):
-        if self._proc:
-            try: self._proc.kill()
-            except Exception: pass
-
-    def processId(self):
-        return self._proc.pid if self._proc else 0
-
-    def waitForFinished(self, msec):
-        if not self._proc:
-            return True
-        try:
-            self._proc.wait(timeout=msec / 1000.0)
-            return True
-        except subprocess.TimeoutExpired:
-            return False
-
 
 
 _DASH = pg.mkPen("gray", style=Qt.PenStyle.DashLine)
@@ -241,6 +160,7 @@ class MainWindow(QMainWindow):
         self._results = []
         self._proc = None
         self._calib_proc = None
+        self._stdout_buf = b""
         self._last_error = None
         self._build_ui()
         self._reload_calibration()
@@ -276,6 +196,20 @@ class MainWindow(QMainWindow):
         self.water_limit.setValue(1000)
         self.water_limit.setMaximumWidth(120)
         session_form.addRow("Water limit:", self.water_limit)
+        data_row = QHBoxLayout()
+        data_row.setContentsMargins(0, 0, 0, 0)
+        data_row.setSpacing(4)
+        self.data_dir = QLineEdit(str(DEFAULT_DATA_DIR))
+        self.data_dir.setToolTip("Sessions are saved as <data dir>/<subject>_<date>_<time>/")
+        data_row.addWidget(self.data_dir, 1)
+        browse_btn = QPushButton("…")
+        browse_btn.setFixedWidth(28)
+        browse_btn.setToolTip("Pick data folder")
+        browse_btn.clicked.connect(self._on_pick_data_dir)
+        data_row.addWidget(browse_btn)
+        data_w = QWidget()
+        data_w.setLayout(data_row)
+        session_form.addRow("Data dir:", data_w)
         ctrl_row.addWidget(session_box, 1)
 
         # Hardware
@@ -344,20 +278,6 @@ class MainWindow(QMainWindow):
         self.error_timeout.setValue(ERROR_TIMEOUT_S)
         self.error_timeout.setMaximumWidth(120)
         train_form.addRow("Error timeout:", self.error_timeout)
-        self.iti_min, self.iti_mean, self.iti_max = (
-            self._make_iti_spin(ITI_MIN_S),
-            self._make_iti_spin(ITI_MEAN_S),
-            self._make_iti_spin(ITI_MAX_S),
-        )
-        iti_row = QHBoxLayout()
-        iti_row.setContentsMargins(0, 0, 0, 0)
-        iti_row.setSpacing(4)
-        for lbl, sp in (("min", self.iti_min), ("mean", self.iti_mean), ("max", self.iti_max)):
-            iti_row.addWidget(QLabel(lbl))
-            iti_row.addWidget(sp)
-        iti_w = QWidget()
-        iti_w.setLayout(iti_row)
-        train_form.addRow("ITI (s):", iti_w)
         self.contrast_combo = QComboBox()
         for preset in CONTRAST_PRESETS:
             label = ", ".join(f"{c * 100:g}" for c in preset)
@@ -447,6 +367,12 @@ class MainWindow(QMainWindow):
         plots.addWidget(self.bias, 1, 1)
         root.addLayout(plots, stretch=1)
 
+    def _on_pick_data_dir(self):
+        start = self.data_dir.text().strip() or str(DEFAULT_DATA_DIR)
+        chosen = QFileDialog.getExistingDirectory(self, "Pick data folder", start)
+        if chosen:
+            self.data_dir.setText(chosen)
+
     def _kv_label(self, text):
         lbl = QLabel(f"{text}:")
         f = lbl.font()
@@ -485,6 +411,7 @@ class MainWindow(QMainWindow):
             return
         self._save_settings()
         self._results = []
+        self._stdout_buf = b""
         self._last_error = None
         self._refresh_all_plots()
         self.trial_value.setText("—")
@@ -495,16 +422,21 @@ class MainWindow(QMainWindow):
 
         contrasts = self.contrast_combo.currentData() or []
         screen_idx = self.display.currentData() or 0
+        screens = QApplication.screens()
+        scr = screens[screen_idx] if 0 <= screen_idx < len(screens) else screens[0]
+        geom = scr.geometry()
         target = self.reward_combo.currentData()
         if target is None:
             self._set_status("No calibration loaded — click Calibrate first.")
             return
+        data_dir = self.data_dir.text().strip() or str(DEFAULT_DATA_DIR)
         argv = [
-            "-u",
             "-m",
             "ibl.task",
             "--subject",
             subject,
+            "--data-dir",
+            data_dir,
             "--n-trials",
             str(self.n_trials.value()),
             "--water-limit",
@@ -513,16 +445,12 @@ class MainWindow(QMainWindow):
             str(self.gain.value()),
             "--error-timeout",
             str(self.error_timeout.value()),
-            "--iti-min",
-            str(self.iti_min.value()),
-            "--iti-mean",
-            str(self.iti_mean.value()),
-            "--iti-max",
-            str(self.iti_max.value()),
             "--contrasts",
             ",".join(str(c) for c in contrasts),
             "--screen",
             str(screen_idx),
+            "--screen-size",
+            f"{geom.width()}x{geom.height()}",
             "--ready",
         ]
         if self.auto_reward_cb.isChecked():
@@ -544,19 +472,13 @@ class MainWindow(QMainWindow):
         else:
             argv += ["--port", self.port.text().strip()]
 
-        self._proc = _ProcBridge(self)
-        self._proc.line_received.connect(self._on_line)
+        self._proc = QProcess(self)
+        self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        self._proc.readyReadStandardOutput.connect(self._on_stdout)
+        self._proc.readyReadStandardError.connect(self._on_stderr)
         self._proc.finished.connect(self._on_finished)
-        self._proc.error.connect(self._on_proc_error)
-        if sys.platform == "win32":
-            self.showMinimized()
+        self._proc.errorOccurred.connect(self._on_proc_error)
         self._proc.start(sys.executable, argv)
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.user32.AllowSetForegroundWindow(int(self._proc.processId()))
-            except Exception:
-                pass
 
         self._set_state("launching")
         self._set_status(
@@ -576,26 +498,38 @@ class MainWindow(QMainWindow):
             return
         self._set_status("Stopping...")
         self._set_state("stopping")
+        # On Windows, QProcess.terminate() posts WM_CLOSE which Python ignores.
+        # Send a "stop" line on stdin so the runner can break out cleanly and
+        # finalize the session log. terminate() is the fallback if stdin is gone.
+        self._proc.write(b"stop\n")
         self._proc.terminate()
 
     # ---- subprocess I/O ----
 
-    def _on_line(self, line):
-        line = line.strip()
-        if not line:
-            return
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            sys.stderr.write(f"[runner stdout, not JSON] {line!r}\n")
-            return
-        self._handle_runner_message(msg)
+    def _on_stdout(self) -> None:
+        assert self._proc is not None
+        self._stdout_buf += bytes(self._proc.readAllStandardOutput())
+        while b"\n" in self._stdout_buf:
+            line, self._stdout_buf = self._stdout_buf.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                sys.stderr.write(f"[runner stdout, not JSON] {line!r}\n")
+                continue
+            self._handle_runner_message(msg)
+
+    def _on_stderr(self) -> None:
+        assert self._proc is not None
+        chunk = bytes(self._proc.readAllStandardError())
+        sys.stderr.write(chunk.decode("utf-8", errors="replace"))
+        sys.stderr.flush()
 
     def _handle_runner_message(self, msg):
         kind = msg.get("type")
         if kind == "ready":
-            if sys.platform == "win32":
-                self.showNormal()
             self._set_state("ready")
             self._set_status(
                 f"Standby — window open. Click Start to begin trials for "
@@ -604,8 +538,6 @@ class MainWindow(QMainWindow):
         elif kind == "running":
             self._set_state("running")
             self._set_status(f"Running session for {self.subject.text().strip()}.")
-        elif kind == "reward":
-            self._sync_reward_combo(msg["ul"])
         elif kind == "trial":
             self._on_trial_complete(
                 SimpleNamespace(**{k: v for k, v in msg.items() if k != "type"})
@@ -615,10 +547,10 @@ class MainWindow(QMainWindow):
             self._set_status(f"ERROR: {self._last_error}")
 
     def _on_proc_error(self, err) -> None:
-        self._last_error = f"Process error: {err}"
+        self._last_error = f"QProcess error: {err}"
         self._set_status(f"ERROR: {self._last_error}")
 
-    def _on_finished(self, exit_code):
+    def _on_finished(self, exit_code, exit_status):
         self._proc = None
         self._set_state("idle")
         if self._last_error is not None:
@@ -630,12 +562,6 @@ class MainWindow(QMainWindow):
         self._set_status(msg)
 
     # ---- per-trial UI update ----
-
-    def _sync_reward_combo(self, target_ul):
-        for i in range(self.reward_combo.count()):
-            if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-6:
-                self.reward_combo.setCurrentIndex(i)
-                return
 
     def _on_trial_complete(self, result):
         self._results.append(result)
@@ -661,6 +587,15 @@ class MainWindow(QMainWindow):
         )
         water_ul = sum(r.reward_ul for r in self._results)
         self.water_label.setText(f"{water_ul:.1f} µL  ({n_correct} rewards)")
+        # Mirror the per-trial reward tier in the dropdown.
+        target_ul = float(result.reward_ul)
+        if target_ul > 0:
+            for i in range(self.reward_combo.count()):
+                if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-6:
+                    self.reward_combo.setCurrentIndex(i)
+                    break
+        elif self.auto_reward_cb.isChecked() and self.reward_combo.count() > 0:
+            self.reward_combo.setCurrentIndex(0)
         self._refresh_all_plots()
         if water_ul >= self.water_limit.value() and self._state == "running":
             self._set_status(
@@ -668,6 +603,7 @@ class MainWindow(QMainWindow):
                 f"{self.water_limit.value()} µL). Stopping..."
             )
             self._set_state("stopping")
+            self._proc.write(b"stop\n")
             self._proc.terminate()
 
     # ---- helpers ----
@@ -684,6 +620,7 @@ class MainWindow(QMainWindow):
     def _set_inputs_enabled(self, enabled):
         for w in (
             self.subject,
+            self.data_dir,
             self.port,
             self.mock_cb,
             self.n_trials,
@@ -691,23 +628,11 @@ class MainWindow(QMainWindow):
             self.auto_reward_cb,
             self.gain,
             self.error_timeout,
-            self.iti_min,
-            self.iti_mean,
-            self.iti_max,
             self.contrast_combo,
             self.display,
         ):
             w.setEnabled(enabled)
         self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
-
-    def _make_iti_spin(self, default):
-        sp = QDoubleSpinBox()
-        sp.setRange(0.0, 60.0)
-        sp.setSingleStep(0.1)
-        sp.setSuffix(" s")
-        sp.setValue(default)
-        sp.setMaximumWidth(80)
-        return sp
 
     def _reload_calibration(self):
         self._calibration = _load_calibration()
@@ -735,7 +660,7 @@ class MainWindow(QMainWindow):
             return
         self._calib_proc = QProcess(self)
         self._calib_proc.finished.connect(self._on_calibrate_finished)
-        self._calib_proc.start(sys.executable, ["-u", "-m", "ibl.calibrate"])
+        self._calib_proc.start(sys.executable, ["-m", "ibl.calibrate"])
         self._set_state("calibrating")
         self._set_status("Calibration GUI open — close it to resume.")
 
@@ -750,6 +675,7 @@ class MainWindow(QMainWindow):
     def _save_settings(self):
         s = self._settings
         s.setValue("subject", self.subject.text())
+        s.setValue("data_dir", self.data_dir.text())
         s.setValue("port", self.port.text())
         s.setValue("mock", self.mock_cb.isChecked())
         s.setValue("n_trials", self.n_trials.value())
@@ -760,9 +686,6 @@ class MainWindow(QMainWindow):
         s.setValue("auto_reward", self.auto_reward_cb.isChecked())
         s.setValue("gain", self.gain.value())
         s.setValue("error_timeout", self.error_timeout.value())
-        s.setValue("iti_min", self.iti_min.value())
-        s.setValue("iti_mean", self.iti_mean.value())
-        s.setValue("iti_max", self.iti_max.value())
         s.setValue("contrast_index", self.contrast_combo.currentIndex())
         s.setValue("display_index", self.display.currentIndex())
         s.setValue("geometry", self.saveGeometry())
@@ -770,6 +693,7 @@ class MainWindow(QMainWindow):
     def _restore_settings(self):
         s = self._settings
         self.subject.setText(s.value("subject", "", type=str))
+        self.data_dir.setText(s.value("data_dir", str(DEFAULT_DATA_DIR), type=str))
         self.port.setText(s.value("port", "/dev/ttyACM0", type=str))
         self.mock_cb.setChecked(s.value("mock", False, type=bool))
         self.n_trials.setValue(s.value("n_trials", 100, type=int))
@@ -783,9 +707,6 @@ class MainWindow(QMainWindow):
         self.auto_reward_cb.setChecked(s.value("auto_reward", False, type=bool))
         self.gain.setValue(s.value("gain", WHEEL_GAIN_DEG_PER_MM, type=float))
         self.error_timeout.setValue(s.value("error_timeout", ERROR_TIMEOUT_S, type=float))
-        self.iti_min.setValue(s.value("iti_min", ITI_MIN_S, type=float))
-        self.iti_mean.setValue(s.value("iti_mean", ITI_MEAN_S, type=float))
-        self.iti_max.setValue(s.value("iti_max", ITI_MAX_S, type=float))
         ci = s.value("contrast_index", 0, type=int)
         if 0 <= ci < self.contrast_combo.count():
             self.contrast_combo.setCurrentIndex(ci)
@@ -799,6 +720,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._save_settings()
         if self._proc is not None:
+            self._proc.write(b"stop\n")
             self._proc.terminate()
             if not self._proc.waitForFinished(3000):
                 self._proc.kill()

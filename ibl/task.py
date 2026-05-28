@@ -17,8 +17,7 @@ import numpy as np
 
 from ibl.config import (
     COUNTER_WINDOW_TRIALS, COUNTS_PER_MM, ERROR_TIMEOUT_S, EXPANSION_ACCURACY,
-    EXPANSION_MIN_TRIALS, EXPANSION_TIERS, INITIAL_CONTRASTS,
-    ITI_MAX_S, ITI_MEAN_S, ITI_MIN_S,
+    EXPANSION_MIN_TRIALS, EXPANSION_TIERS, INITIAL_CONTRASTS, ITI_S,
     OPEN_LOOP_HOLD_S, ORI_DEG, QUIESCENCE_MAX_S, QUIESCENCE_MEAN_S,
     QUIESCENCE_MIN_S, QUIESCENCE_STILL_BAND_DEG, RESPONSE_WINDOW_S,
     RIG_DISTANCE_CM, RIG_RESOLUTION,
@@ -174,14 +173,19 @@ class EscapeRequested(Exception):
     pass
 
 
-def build_window(screen=0):
-    """Open the PsychoPy Window, GratingStim, and photodiode-sync square."""
+def build_window(screen=0, screen_size=None):
+    """Open the PsychoPy Window, GratingStim, and photodiode-sync square.
+    screen_size, if given, overrides RIG_RESOLUTION (and silences PsychoPy's
+    "expected 800x600" warning by matching the actual screen)."""
+    # Lazy import: PsychoPy hijacks --help if imported at module level.
     from psychopy import monitors, visual
 
     mon = monitors.Monitor("ibl_rig", width=RIG_WIDTH_CM, distance=RIG_DISTANCE_CM)
-    mon.setSizePix(RIG_RESOLUTION)  # placeholder; PsychoPy splash needs sizePix pre-Window
+    mon.setSizePix(tuple(screen_size) if screen_size else RIG_RESOLUTION)
+    # On Windows fullscreen, passing size= mismatched with the actual display
+    # hangs Window init. Let PsychoPy/pyglet detect the size, then update mon.
     win = visual.Window(monitor=mon, units="deg", color=(0, 0, 0),
-                        fullscr=True, screen=screen, checkTiming=False)
+                        fullscr=True, screen=screen)
     mon.setSizePix(tuple(win.size))
     gabor = visual.GratingStim(
         win=win, tex="sin", mask="gauss", units="deg",
@@ -211,8 +215,7 @@ def _wait(duration: float, flip: Callable[[], None]) -> None:
 
 
 def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
-              reward_ul, error_timeout_s,
-              iti_min_s, iti_mean_s, iti_max_s, log_frame=None):
+              reward_ul, error_timeout_s, log_frame=None):
     def flip():
         win.flip()
         if log_frame is not None:
@@ -280,30 +283,21 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
     hw.trial_off()
     t_end = time.monotonic()
 
-    iti_dur = iti_min_s
-    if iti_max_s > iti_min_s and iti_mean_s > 0:
-        while True:
-            x = random.expovariate(1.0 / iti_mean_s)
-            if x <= iti_max_s - iti_min_s:
-                iti_dur = iti_min_s + x
-                break
-    _wait(iti_dur, flip)
+    _wait(ITI_S, flip)
 
     return TrialResult(
         trial_index=trial_index, side=side, contrast=contrast, response=response,
         correct=correct, response_time_s=response_time_s,
         t_start=t_start, t_cue=t_cue, t_response=t_response, t_end=t_end,
-        iti_s=iti_dur, reward_ul=dispensed_ul,
+        iti_s=ITI_S, reward_ul=dispensed_ul,
     )
 
 
 def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 reward_ms, reward_ul, error_timeout_s,
-                iti_min_s, iti_mean_s, iti_max_s,
                 auto_reward=False, calibration=None,
                 active_contrasts=None, expansion_tiers=None,
-                on_trial_complete=None, on_reward_set=None,
-                should_stop=None):
+                on_trial_complete=None, should_stop=None):
     """Loop trials, log results. Returns 0 / 2 (hw error).
 
     With auto_reward, advance one tier in `calibration` per correct trial
@@ -327,14 +321,10 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 ms_now = reward_ms
                 ul_now = reward_ul
             hw.set_reward_duration(ms_now)
-            if on_reward_set:
-                on_reward_set(ms_now, ul_now)
             side, contrast = schedule.next_trial()
             try:
                 result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
                                    reward_ul=ul_now, error_timeout_s=error_timeout_s,
-                                   iti_min_s=iti_min_s, iti_mean_s=iti_mean_s,
-                                   iti_max_s=iti_max_s,
                                    log_frame=logger.log_frame)
             except EscapeRequested:
                 break
@@ -373,9 +363,6 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         "reward_ul": None if args.auto_reward else args.reward_ul,
         "calibration": calibration if args.auto_reward else None,
         "error_timeout_s": args.error_timeout,
-        "iti_min_s": args.iti_min,
-        "iti_mean_s": args.iti_mean,
-        "iti_max_s": args.iti_max,
         "water_limit_ul": args.water_limit,
         "gain_deg_per_mm": args.gain,
         "contrasts": args.contrasts,
@@ -390,7 +377,7 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         "response_bias": ((n_right - n_left) / responded) if responded else None,
         "water_dispensed_ul": sum(r.reward_ul for r in results),
     }
-    (sd / "summary.json").write_text(json.dumps(s, indent=2) + "\n")
+    (sd / "summary.json").write_text(json.dumps(s, indent=2) + "\n", encoding="utf-8")
 
     if s["auto_reward"]:
         tiers_ul = [c['target_ul'] for c in calibration]
@@ -412,7 +399,6 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         reward_line,
         f"- Water limit: {s['water_limit_ul'] or '—'} µL",
         f"- Error timeout: {s['error_timeout_s']} s",
-        f"- ITI: min {s['iti_min_s']} / mean {s['iti_mean_s']} / max {s['iti_max_s']} s",
         f"- Wheel gain: {s['gain_deg_per_mm']} deg/mm",
         f"- Contrasts: {s['contrasts'] or 'default'}",
         f"- Hardware: {'mock' if s['mock'] else s['port']}, screen {s['screen']}",
@@ -426,26 +412,15 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         f"- Response bias (R−L)/(R+L): {bias_s}",
         f"- Water dispensed: {s['water_dispensed_ul']:.1f} µL  ({s['n_correct']} rewards)",
     ]
-    (sd / "SUMMARY.md").write_text("\n".join(lines) + "\n")
+    (sd / "SUMMARY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # CLI runner: `python -m ibl.task ...`. Emits one JSON line per trial on stdout.
 def _runner_main():
     import argparse, dataclasses, json, queue, signal, sys, threading, traceback
-    from pathlib import Path as _P
-    _log = _P.home() / "ibl_runner.log"
-    def _crumb(msg):
-        line = f"[runner] {msg}"
-        print(line, file=sys.stderr, flush=True)
-        try:
-            with open(_log, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception:
-            pass
-    _crumb("entered _runner_main")
 
-    def emit(payload, _out=sys.stdout):
-        _out.write(json.dumps(payload) + "\n"); _out.flush()
+    def emit(payload):
+        sys.stdout.write(json.dumps(payload) + "\n"); sys.stdout.flush()
 
     ap = argparse.ArgumentParser(prog="ibl.task")
     ap.add_argument("--subject", required=True)
@@ -464,13 +439,14 @@ def _runner_main():
                     help="comma-separated expansion tiers, e.g. 0.25,0.125,0.0625")
     ap.add_argument("--screen", type=int, default=0,
                     help="display index for the PsychoPy fullscreen window")
+    ap.add_argument("--screen-size", type=str, default=None,
+                    help="screen resolution WxH for the chosen display, e.g. 1920x1080")
     ap.add_argument("--error-timeout", type=float, default=ERROR_TIMEOUT_S,
                     help="error feedback duration in seconds (gabor + white noise)")
-    ap.add_argument("--iti-min", type=float, default=ITI_MIN_S)
-    ap.add_argument("--iti-mean", type=float, default=ITI_MEAN_S)
-    ap.add_argument("--iti-max", type=float, default=ITI_MAX_S)
     ap.add_argument("--water-limit", type=int, default=None,
                     help="logged in SUMMARY.md; enforcement lives in the GUI")
+    ap.add_argument("--data-dir", type=str, default=None,
+                    help="parent folder for session output; defaults to cwd")
     ap.add_argument("--auto-reward", action="store_true",
                     help="advance reward one tier per correct trial; reset on wrong/no-go")
     ap.add_argument("--calibration", type=str, default=None,
@@ -478,7 +454,6 @@ def _runner_main():
     ap.add_argument("--ready", action="store_true",
                     help="open window in standby; wait for a 'start' line on stdin before trials")
     args = ap.parse_args()
-    _crumb("argparse ok")
 
     calibration = None
     if args.calibration:
@@ -493,35 +468,46 @@ def _runner_main():
               if args.contrasts else None)
     tiers = (tuple(float(x) for x in args.contrast_tiers.split(","))
              if args.contrast_tiers else None)
+    size_px = None
+    if args.screen_size:
+        w, h = args.screen_size.lower().split("x")
+        size_px = (int(w), int(h))
+
     stop = {"flag": False}
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.update(flag=True))
 
     cmd_q = queue.Queue()
     def _stdin_reader():
+        # "stop" sets the global stop flag (which run_session checks each trial
+        # and the --ready standby loop also honors); everything else queues for
+        # the standby loop (start / reward / flush). On Windows, QProcess
+        # terminate() posts WM_CLOSE and never reaches a SIGTERM handler — so
+        # stop must arrive over stdin to actually halt a running session.
         try:
             for line in iter(sys.stdin.readline, ''):
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                if line == "stop":
+                    stop["flag"] = True
+                else:
                     cmd_q.put(line)
         except Exception:
             pass
-    threading.Thread(target=_stdin_reader, daemon=True).start()
 
-    _crumb(f"argv: {sys.argv[1:]}")
     win = hw = None
     try:
         from ibl.io import FakeTeensy, Teensy
-        _crumb("connecting hw...")
         hw = (FakeTeensy(gain_deg_per_count=gain_deg_per_count) if args.mock
               else Teensy(args.port, gain_deg_per_count=gain_deg_per_count))
-        _crumb(f"hw ok: {type(hw).__name__}")
         hw.set_reward_duration(initial_ms)
-        _crumb(f"opening window screen={args.screen}...")
-        win, gabor, sync = build_window(screen=args.screen)
-        _crumb(f"window ok: size={tuple(win.size)}")
+        win, gabor, sync = build_window(screen=args.screen, screen_size=size_px)
         emit({"type": "ready"})
-        _crumb("emitted ready")
+        # Start stdin reader AFTER the PsychoPy Window exists. On Windows,
+        # a background thread blocked on sys.stdin.readline() (pipe ReadFile)
+        # before Window.__init__ deadlocks pyglet's display init.
+        threading.Thread(target=_stdin_reader, daemon=True).start()
 
         if args.ready:
             # Hold the window open until the host writes "start" on stdin.
@@ -553,26 +539,22 @@ def _runner_main():
             emit({"type": "running"})
 
         start = datetime.datetime.now()
-        sd = Path(f"{args.subject}_{start.strftime('%Y-%m-%d_%H-%M-%S')}")
+        parent = Path(args.data_dir).expanduser() if args.data_dir else Path()
+        sd = parent / f"{args.subject}_{start.strftime('%Y-%m-%d_%H-%M-%S')}"
         sd.mkdir(parents=True, exist_ok=True)
         results = []
         def on_trial(r):
             results.append(r)
             emit({"type": "trial", **dataclasses.asdict(r)})
-        def on_reward(ms, ul):
-            emit({"type": "reward", "ms": ms, "ul": ul})
         try:
             return run_session(
                 hw, win, gabor, sync, session_dir=sd,
                 n_trials=args.n_trials,
                 reward_ms=args.reward_ms, reward_ul=args.reward_ul,
                 error_timeout_s=args.error_timeout,
-                iti_min_s=args.iti_min, iti_mean_s=args.iti_mean,
-                iti_max_s=args.iti_max,
                 auto_reward=args.auto_reward, calibration=calibration,
                 active_contrasts=active, expansion_tiers=tiers,
                 on_trial_complete=on_trial,
-                on_reward_set=on_reward,
                 should_stop=lambda: stop["flag"],
             )
         finally:
