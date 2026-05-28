@@ -181,11 +181,11 @@ def build_window(screen=0, screen_size=None):
     # Lazy import: PsychoPy hijacks --help if imported at module level.
     from psychopy import monitors, visual
 
-    size_px = tuple(screen_size) if screen_size else RIG_RESOLUTION
     mon = monitors.Monitor("ibl_rig", width=RIG_WIDTH_CM, distance=RIG_DISTANCE_CM)
-    mon.setSizePix(size_px)
-    win = visual.Window(monitor=mon, units="deg", color=(0, 0, 0), fullscr=True,
-                        screen=screen, size=size_px)
+    mon.setSizePix(tuple(screen_size) if screen_size else RIG_RESOLUTION)
+    win = visual.Window(monitor=mon, units="deg", color=(0, 0, 0),
+                        fullscr=True, screen=screen)
+    mon.setSizePix(tuple(win.size))
     gabor = visual.GratingStim(
         win=win, tex="sin", mask="gauss", units="deg",
         size=SIZE_DEG, sf=SF_CPD, ori=ORI_DEG, contrast=0.0,
