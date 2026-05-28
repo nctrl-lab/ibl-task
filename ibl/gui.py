@@ -205,12 +205,10 @@ class MainWindow(QMainWindow):
         hw_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.display = QComboBox()
         primary = QApplication.primaryScreen()
-        screen_offset = 1 if sys.platform == "win32" else 0
         for i, scr in enumerate(QApplication.screens()):
             g = scr.geometry()
             tag = " (primary)" if scr is primary else ""
-            psy = i + screen_offset
-            self.display.addItem(f"{psy}: {scr.name()} {g.width()}×{g.height()}{tag}", psy)
+            self.display.addItem(f"{i}: {scr.name()} {g.width()}×{g.height()}{tag}", i)
         hw_form.addRow("Display:", self.display)
         self.port = QLineEdit("/dev/ttyACM0")
         hw_form.addRow("Port:", self.port)
@@ -418,12 +416,7 @@ class MainWindow(QMainWindow):
         self.water_label.setText("0.0 µL  (0 rewards)")
 
         contrasts = self.contrast_combo.currentData() or []
-        screen_idx = self.display.currentData()
-        if screen_idx is None:
-            screen_idx = 1 if sys.platform == "win32" else 0
-        screens = QApplication.screens()
-        qt_idx = self.display.currentIndex()
-        scr = screens[qt_idx] if 0 <= qt_idx < len(screens) else screens[0]
+        screen_idx = self.display.currentData() or 0
         target = self.reward_combo.currentData()
         if target is None:
             self._set_status("No calibration loaded — click Calibrate first.")

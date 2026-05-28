@@ -21,7 +21,7 @@ from ibl.config import (
     ITI_MAX_S, ITI_MEAN_S, ITI_MIN_S,
     OPEN_LOOP_HOLD_S, ORI_DEG, QUIESCENCE_MAX_S, QUIESCENCE_MEAN_S,
     QUIESCENCE_MIN_S, QUIESCENCE_STILL_BAND_DEG, RESPONSE_WINDOW_S,
-    RIG_DISTANCE_CM,
+    RIG_DISTANCE_CM, RIG_RESOLUTION,
     RIG_WIDTH_CM, SF_CPD, SIZE_DEG, STIM_START_OFFSET_DEG, SYNC_PIX,
     WHEEL_GAIN_DEG_PER_MM,
 )
@@ -179,6 +179,7 @@ def build_window(screen=0):
     from psychopy import monitors, visual
 
     mon = monitors.Monitor("ibl_rig", width=RIG_WIDTH_CM, distance=RIG_DISTANCE_CM)
+    mon.setSizePix(RIG_RESOLUTION)  # placeholder; PsychoPy splash needs sizePix pre-Window
     win = visual.Window(monitor=mon, units="deg", color=(0, 0, 0),
                         fullscr=True, screen=screen)
     mon.setSizePix(tuple(win.size))
@@ -431,6 +432,17 @@ def _write_summary(sd, start, end, args, results, calibration=None):
 # CLI runner: `python -m ibl.task ...`. Emits one JSON line per trial on stdout.
 def _runner_main():
     import argparse, dataclasses, json, queue, signal, sys, threading, traceback
+    from pathlib import Path as _P
+    _log = _P.home() / "ibl_runner.log"
+    def _crumb(msg):
+        line = f"[runner] {msg}"
+        print(line, file=sys.stderr, flush=True)
+        try:
+            with open(_log, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+    _crumb("entered _runner_main")
 
     def emit(payload, _out=sys.stdout):
         _out.write(json.dumps(payload) + "\n"); _out.flush()
@@ -466,6 +478,7 @@ def _runner_main():
     ap.add_argument("--ready", action="store_true",
                     help="open window in standby; wait for a 'start' line on stdin before trials")
     args = ap.parse_args()
+    _crumb("argparse ok")
 
     calibration = None
     if args.calibration:
@@ -495,14 +508,20 @@ def _runner_main():
             pass
     threading.Thread(target=_stdin_reader, daemon=True).start()
 
+    _crumb(f"argv: {sys.argv[1:]}")
     win = hw = None
     try:
         from ibl.io import FakeTeensy, Teensy
+        _crumb("connecting hw...")
         hw = (FakeTeensy(gain_deg_per_count=gain_deg_per_count) if args.mock
               else Teensy(args.port, gain_deg_per_count=gain_deg_per_count))
+        _crumb(f"hw ok: {type(hw).__name__}")
         hw.set_reward_duration(initial_ms)
+        _crumb(f"opening window screen={args.screen}...")
         win, gabor, sync = build_window(screen=args.screen)
+        _crumb(f"window ok: size={tuple(win.size)}")
         emit({"type": "ready"})
+        _crumb("emitted ready")
 
         if args.ready:
             # Hold the window open until the host writes "start" on stdin.
