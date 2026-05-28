@@ -472,6 +472,11 @@ class MainWindow(QMainWindow):
         self._proc.finished.connect(self._on_finished)
         self._proc.errorOccurred.connect(self._on_proc_error)
         if sys.platform == "win32":
+            def _proc_modifier(args):
+                CREATE_NEW_CONSOLE = 0x00000010
+                CREATE_NO_WINDOW = 0x08000000
+                args.flags = (args.flags & ~CREATE_NO_WINDOW) | CREATE_NEW_CONSOLE
+            self._proc.setCreateProcessArgumentsModifier(_proc_modifier)
             self.showMinimized()
         self._proc.start(sys.executable, argv)
         if sys.platform == "win32":
