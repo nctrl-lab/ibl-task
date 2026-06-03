@@ -185,6 +185,11 @@ class MainWindow(QMainWindow):
         session_box = QGroupBox("Session")
         session_form = QFormLayout(session_box)
         session_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Training", "training")
+        self.mode_combo.addItem("Habituation", "habituation")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        session_form.addRow("Mode:", self.mode_combo)
         self.subject = QLineEdit()
         self.subject.setPlaceholderText("required")
         session_form.addRow("Subject:", self.subject)
@@ -447,9 +452,12 @@ class MainWindow(QMainWindow):
             self._set_status("No calibration loaded — click Calibrate first.")
             return
         data_dir = self.data_dir.text().strip() or str(DEFAULT_DATA_DIR)
+        mode = self.mode_combo.currentData()
         argv = [
             "-m",
             "ibl.task",
+            "--mode",
+            mode,
             "--subject",
             subject,
             "--data-dir",
@@ -641,6 +649,8 @@ class MainWindow(QMainWindow):
         self.status_label.setText(text)
 
     def _set_inputs_enabled(self, enabled):
+        is_training = self.mode_combo.currentData() == "training"
+
         for w in (
             self.subject,
             self.data_dir,
@@ -648,6 +658,12 @@ class MainWindow(QMainWindow):
             self.mock_cb,
             self.n_trials,
             self.water_limit,
+            self.display,
+            self.mode_combo,
+        ):
+            w.setEnabled(enabled)
+
+        for w in (
             self.auto_reward_cb,
             self.gain,
             self.error_timeout,
@@ -655,11 +671,19 @@ class MainWindow(QMainWindow):
             self.iti_mean,
             self.iti_max,
             self.contrast_combo,
-            self.display,
         ):
-            w.setEnabled(enabled)
-        self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
+            w.setEnabled(enabled and is_training)
 
+        self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
+    
+    def _on_mode_changed(self, index):
+        if self.mode_combo.currentData() == "habituation":
+                self.auto_reward_cb.setChecked(False)
+        
+        if getattr(self, "_state", "idle") in ("idle", "calibrating"):
+            self._set_inputs_enabled(True)
+            
+    
     def _make_iti_spin(self, default):
         sp = QDoubleSpinBox()
         sp.setRange(0.0, 60.0)
@@ -727,6 +751,8 @@ class MainWindow(QMainWindow):
         s.setValue("contrast_index", self.contrast_combo.currentIndex())
         s.setValue("display_index", self.display.currentIndex())
         s.setValue("geometry", self.saveGeometry())
+        s.setValue("mode_index", self.mode_combo.currentIndex())
+        s.setValue("subject", self.subject.text())
 
     def _restore_settings(self):
         s = self._settings
@@ -757,6 +783,10 @@ class MainWindow(QMainWindow):
         geom = s.value("geometry")
         if geom:
             self.restoreGeometry(geom)
+        mi = s.value("mode_index", 0, type=int)
+        if 0 <= mi < self.mode_combo.count():
+            self.mode_combo.setCurrentIndex(mi)
+        self.subject.setText(s.value("subject", "", type=str))
 
     def closeEvent(self, event):
         self._save_settings()

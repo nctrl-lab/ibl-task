@@ -24,6 +24,7 @@ from ibl.config import (
     RIG_DISTANCE_CM, RIG_RESOLUTION,
     RIG_WIDTH_CM, SF_CPD, SIZE_DEG, STIM_START_OFFSET_DEG, SYNC_PIX,
     WHEEL_GAIN_DEG_PER_MM,
+    HAB_STIM_MEAN_S, HAB_STIM_STD_S, HAB_REWARD_DELAY_S, HAB_CENTER_S, HAB_ITI_S,
 )
 
 
@@ -301,13 +302,65 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
         iti_s=iti_dur, reward_ul=dispensed_ul,
     )
 
+def run_habituation_trial(win, gabor, sync_sq, hw, side, trial_index, reward_ul, log_frame=None):
+    def flip():
+        win.flip()
+        if log_frame is not None:
+            log_frame(time.monotonic(), float(gabor.pos[0]), hw.position_deg())
+
+    hw.trial_on()
+    
+    # 1. 주변부에 자극 띄우기
+    init_pos = side * STIM_START_OFFSET_DEG
+    gabor.contrast = 1.0
+    gabor.pos = (init_pos, 0.0)
+    gabor.phase = random.random()
+    sync_sq.fillColor = "white"
+    flip()
+    t_start = time.monotonic()
+    
+    # N(10, 2) 시간만큼 대기 (최소 2초 보장)
+    stim_dur = max(2.0, random.gauss(HAB_STIM_MEAN_S, HAB_STIM_STD_S))
+    _wait(stim_dur, flip)
+    
+    # 2. 중앙으로 이동 후 대기
+    gabor.pos = (0.0, 0.0)
+    flip()
+    t_cue = time.monotonic() # 중앙에 도착한 시점을 cue로 간주
+    
+    _wait(HAB_REWARD_DELAY_S, flip)
+    
+    # 3. Tone 재생 및 보상(Valve Open)
+    hw.cue_on()
+    hw.reward()
+    t_response = time.monotonic() # 자동 응답 시점
+    
+    remaining = max(0.0, HAB_CENTER_S - HAB_REWARD_DELAY_S)
+    _wait(remaining, flip)
+    
+    # 4. 자극 끄기 및 ITI
+    gabor.contrast = 0.0
+    sync_sq.fillColor = "black"
+    hw.cue_off()
+    hw.trial_off()
+    t_end = time.monotonic()
+    
+    _wait(HAB_ITI_S, flip)
+    
+    return TrialResult(
+        trial_index=trial_index, side=side, contrast=1.0, response=side, # 자동으로 정답 처리
+        correct=True, response_time_s=t_response - t_cue,
+        t_start=t_start, t_cue=t_cue, t_response=t_response, t_end=t_end,
+        iti_s=HAB_ITI_S, reward_ul=reward_ul,
+    )
 
 def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 reward_ms, reward_ul, error_timeout_s,
                 iti_min_s, iti_mean_s, iti_max_s,
                 auto_reward=False, calibration=None,
                 active_contrasts=None, expansion_tiers=None,
-                on_trial_complete=None, should_stop=None):
+                on_trial_complete=None, should_stop=None,
+                mode="training"):
     """Loop trials, log results. Returns 0 / 2 (hw error).
 
     With auto_reward, advance one tier in `calibration` per correct trial
@@ -331,13 +384,18 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 ms_now = reward_ms
                 ul_now = reward_ul
             hw.set_reward_duration(ms_now)
-            side, contrast = schedule.next_trial()
             try:
-                result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
-                                   reward_ul=ul_now, error_timeout_s=error_timeout_s,
-                                   iti_min_s=iti_min_s, iti_mean_s=iti_mean_s,
-                                   iti_max_s=iti_max_s,
-                                   log_frame=logger.log_frame)
+                if mode == "habituation":
+                    side = random.choice([-1, 1])
+                    result = run_habituation_trial(win, gabor, sync, hw, side, trial_index,
+                                                    reward_ul=ul_now, log_frame=logger.log_frame)
+                else:
+                    side, contrast = schedule.next_trial()
+                    result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
+                                    reward_ul=ul_now, error_timeout_s=error_timeout_s,
+                                    iti_min_s=iti_min_s, iti_mean_s=iti_mean_s,
+                                    iti_max_s=iti_max_s,
+                                    log_frame=logger.log_frame)
             except EscapeRequested:
                 break
             schedule.record(result)
@@ -439,6 +497,7 @@ def _runner_main():
         sys.stdout.write(json.dumps(payload) + "\n"); sys.stdout.flush()
 
     ap = argparse.ArgumentParser(prog="ibl.task")
+    ap.add_argument("--mode", type=str, choices=["training", "habituation"],default="training")
     ap.add_argument("--subject", required=True)
     ap.add_argument("--n-trials", type=int, required=True)
     ap.add_argument("--mock", action="store_true")
@@ -577,6 +636,7 @@ def _runner_main():
                 active_contrasts=active, expansion_tiers=tiers,
                 on_trial_complete=on_trial,
                 should_stop=lambda: stop["flag"],
+                mode = args.mode,
             )
         finally:
             _write_summary(sd, start, datetime.datetime.now(), args, results, calibration)

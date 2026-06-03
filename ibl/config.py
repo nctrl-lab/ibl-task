@@ -23,6 +23,13 @@ ITI_MIN_S = 0.5
 ITI_MEAN_S = 2.0
 ITI_MAX_S = 5.0
 
+# Habituation timings
+HAB_STIM_MEAN_S = 10.0
+HAB_STIM_STD_S = 2.0
+HAB_REWARD_DELAY_S = 0.5
+HAB_CENTER_S = 1.0
+HAB_ITI_S = 1.0
+
 # Wheel / encoder
 STIM_START_OFFSET_DEG = 35.0
 ENCODER_PPR = 512
@@ -35,7 +42,7 @@ GAIN_DEG_PER_COUNT = WHEEL_GAIN_DEG_PER_MM / COUNTS_PER_MM
 MAX_VALVE_MS = 1000
 
 # Schedule
-INITIAL_CONTRASTS = (1.0, 0.5)
+INITIAL_CONTRASTS = (1.0,)
 EXPANSION_TIERS = (0.25, 0.125, 0.0625)
 EXPANSION_ACCURACY = 0.80
 EXPANSION_MIN_TRIALS = 400
@@ -46,6 +53,7 @@ EXPANSION_MIN_TRIALS = 400
 # twice the probability of 0% (paper: 2/11 vs 1/11) since the paper draws
 # uniformly over signed trial types and ±c collapses to a single 0.
 CONTRAST_PRESETS = (
+    (1.0,),
     (1.0, 0.5),
     (1.0, 0.5, 0.25),
     (1.0, 0.5, 0.25, 0.125),
