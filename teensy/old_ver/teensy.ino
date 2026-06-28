@@ -50,12 +50,13 @@ AudioSynthWaveformSine  sineOsc;
 AudioEffectEnvelope     sineEnv;
 AudioSynthNoiseWhite    noiseGen;
 AudioMixer4             mixer;
-AudioOutputMQS    mqsOut;
+AudioOutputI2S          i2sOut;
+AudioControlSGTL5000    audioShield;
 AudioConnection c1(sineOsc,  sineEnv);
 AudioConnection c2(sineEnv,  0, mixer, 0);
 AudioConnection c3(noiseGen, 0, mixer, 1);
-AudioConnection c4(mixer, 0, mqsOut, 0);
-AudioConnection c5(mixer, 0, mqsOut, 1);
+AudioConnection c4(mixer, 0, i2sOut, 0);
+AudioConnection c5(mixer, 0, i2sOut, 1);
 
 Encoder myEnc(ENCA, ENCB);
 
@@ -244,13 +245,15 @@ void setup() {
   Serial.setTimeout(10);
 
   AudioMemory(20);
+  audioShield.enable();
+  audioShield.volume(0.8);
   sineEnv.attack(10);
   sineEnv.decay(0);
   sineEnv.sustain(1.0);
   sineEnv.release(10);
   sineOsc.frequency(5000);
   sineOsc.amplitude(0.8);
-  noiseGen.amplitude(1.0);
+  noiseGen.amplitude(0.5);
 
   allOff();
 }

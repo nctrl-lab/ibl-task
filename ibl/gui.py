@@ -187,7 +187,9 @@ class MainWindow(QMainWindow):
         session_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("Training", "training")
-        self.mode_combo.addItem("Habituation", "habituation")
+        self.mode_combo.addItem("Habituation 1 (Passive)", "habituation_passive")
+        self.mode_combo.addItem("Habituation 2 (Any Move)", "habituation_any_move")
+        self.mode_combo.addItem("Habituation 3 (Clamped)", "habituation_clamped")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         session_form.addRow("Mode:", self.mode_combo)
         self.subject = QLineEdit()
@@ -255,6 +257,26 @@ class MainWindow(QMainWindow):
         )
         self.auto_reward_cb.toggled.connect(self._on_auto_reward_toggled)
         reward_row.addWidget(self.auto_reward_cb)
+        self.random_reward_cb = QCheckBox("Random")
+        self.random_reward_cb.toggled.connect(self._on_random_reward_toggled)
+        reward_row.addWidget(self.random_reward_cb)
+
+        self.random_reward_prob = QDoubleSpinBox()
+        self.random_reward_prob.setRange(0.01, 1.0)
+        self.random_reward_prob.setSingleStep(0.05)
+        self.random_reward_prob.setDecimals(2)
+        self.random_reward_prob.setValue(0.10)
+        self.random_reward_prob.setMaximumWidth(68)
+        self.random_reward_prob.setEnabled(False)
+        reward_row.addWidget(self.random_reward_prob)
+        self.random_reward_streak = QSpinBox()
+        self.random_reward_streak.setRange(1,99)
+        self.random_reward_streak.setValue(3)
+        self.random_reward_streak.setMaximumWidth(55)
+        self.random_reward_streak.setEnabled(False)
+        reward_row.addWidget(self.random_reward_streak)
+
+        
         self.free_btn = QPushButton("💧")
         self.free_btn.setToolTip("Free reward (current selection)")
         self.free_btn.setFixedSize(28, 28)
@@ -498,6 +520,21 @@ class MainWindow(QMainWindow):
                 "--reward-ms", str(int(target["ms"])),
                 "--reward-ul", str(target["target_ul"]),
             ]
+        
+        if self.random_reward_cb.isChecked():
+            largest = self._calibration[-1]
+            argv += [
+                "--random-reward",
+                "--random-reward-prob", str(self.random_reward_prob.value()),
+                "--random-reward-ul",   str(largest["target_ul"]),
+                "--random-reward-ms",   str(int(largest["ms"])),
+                "--random-reward-streak",   str(self.random_reward_streak.value()),
+                "--calibration",
+                json.dumps([
+                    {"target_ul": t["target_ul"], "ms": t["ms"]}
+                    for t in self._calibration
+                ]),
+            ]
         if self.mock_cb.isChecked():
             argv.append("--mock")
         else:
@@ -677,7 +714,7 @@ class MainWindow(QMainWindow):
         self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
     
     def _on_mode_changed(self, index):
-        if self.mode_combo.currentData() == "habituation":
+        if "habituation" in self.mode_combo.currentData():
                 self.auto_reward_cb.setChecked(False)
         
         if getattr(self, "_state", "idle") in ("idle", "calibrating"):
@@ -713,6 +750,10 @@ class MainWindow(QMainWindow):
         self.reward_combo.setEnabled(not checked and self._state == "idle")
         if checked and self.reward_combo.count() > 0:
             self.reward_combo.setCurrentIndex(0)
+    
+    def _on_random_reward_toggled(self, checked):
+        self.random_reward_prob.setEnabled(checked)
+        self.random_reward_streak.setEnabled(checked)
 
     def _on_calibrate(self):
         if self._calib_proc is not None or self._proc is not None:

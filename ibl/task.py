@@ -24,9 +24,8 @@ from ibl.config import (
     RIG_DISTANCE_CM, RIG_RESOLUTION,
     RIG_WIDTH_CM, SF_CPD, SIZE_DEG, STIM_START_OFFSET_DEG, SYNC_PIX,
     WHEEL_GAIN_DEG_PER_MM,
-    HAB_STIM_MEAN_S, HAB_STIM_STD_S, HAB_REWARD_DELAY_S, HAB_CENTER_S, HAB_ITI_S,
+    HAB_STIM_MEAN_S, HAB_STIM_STD_S, HAB_REWARD_DELAY_S, HAB_CENTER_S, HAB_ITI_S, HAB_MOVEMENT_DEG, HAB_TIMEOUT_S,
 )
-
 
 _CSV_HEADER = [
     "trial_index", "signed_contrast", "stim_side", "response", "correct",
@@ -217,8 +216,8 @@ def _wait(duration: float, flip: Callable[[], None]) -> None:
 
 
 def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
-              reward_ul, error_timeout_s,
-              iti_min_s, iti_mean_s, iti_max_s, log_frame=None):
+                reward_ul, error_timeout_s,
+                iti_min_s, iti_mean_s, iti_max_s, log_frame=None,):
     def flip():
         win.flip()
         if log_frame is not None:
@@ -302,15 +301,14 @@ def run_trial(win, gabor, sync_sq, hw, side, contrast, trial_index,
         iti_s=iti_dur, reward_ul=dispensed_ul,
     )
 
-def run_habituation_trial(win, gabor, sync_sq, hw, side, trial_index, reward_ul, log_frame=None):
+def run_habituation_passive_trial(win, gabor, sync_sq, hw, side, trial_index, reward_ul, log_frame=None):
+    """Phase 1 (Passive): 기존 방식. 가만히 있어도 알아서 중앙으로 가고 보상."""
     def flip():
         win.flip()
         if log_frame is not None:
             log_frame(time.monotonic(), float(gabor.pos[0]), hw.position_deg())
 
     hw.trial_on()
-    
-    # 1. 주변부에 자극 띄우기
     init_pos = side * STIM_START_OFFSET_DEG
     gabor.contrast = 1.0
     gabor.pos = (init_pos, 0.0)
@@ -319,39 +317,195 @@ def run_habituation_trial(win, gabor, sync_sq, hw, side, trial_index, reward_ul,
     flip()
     t_start = time.monotonic()
     
-    # N(10, 2) 시간만큼 대기 (최소 2초 보장)
     stim_dur = max(2.0, random.gauss(HAB_STIM_MEAN_S, HAB_STIM_STD_S))
     _wait(stim_dur, flip)
     
-    # 2. 중앙으로 이동 후 대기
     gabor.pos = (0.0, 0.0)
     flip()
-    t_cue = time.monotonic() # 중앙에 도착한 시점을 cue로 간주
+    t_cue = time.monotonic()
     
     _wait(HAB_REWARD_DELAY_S, flip)
     
-    # 3. Tone 재생 및 보상(Valve Open)
     hw.cue_on()
     hw.reward()
-    t_response = time.monotonic() # 자동 응답 시점
+    t_response = time.monotonic()
     
     remaining = max(0.0, HAB_CENTER_S - HAB_REWARD_DELAY_S)
     _wait(remaining, flip)
     
-    # 4. 자극 끄기 및 ITI
     gabor.contrast = 0.0
     sync_sq.fillColor = "black"
     hw.cue_off()
     hw.trial_off()
     t_end = time.monotonic()
-    
     _wait(HAB_ITI_S, flip)
     
     return TrialResult(
-        trial_index=trial_index, side=side, contrast=1.0, response=side, # 자동으로 정답 처리
+        trial_index=trial_index, side=side, contrast=1.0, response=side,
         correct=True, response_time_s=t_response - t_cue,
         t_start=t_start, t_cue=t_cue, t_response=t_response, t_end=t_end,
         iti_s=HAB_ITI_S, reward_ul=reward_ul,
+    )
+
+def run_habituation_any_move_trial(win, gabor, sync_sq, hw, side, trial_index, reward_ul, error_timeout_s, log_frame=None):
+    """Phase 2 (Any Move): 휠을 살짝만 굴려도 정답 처리 후 보상."""
+    def flip():
+        win.flip()
+        if log_frame is not None:
+            log_frame(time.monotonic(), float(gabor.pos[0]), hw.position_deg())
+
+    hw.trial_on()
+    gabor.contrast = 0.0
+    gabor.pos = (side * STIM_START_OFFSET_DEG, 0.0)
+    sync_sq.fillColor = "black"
+    flip()
+
+    t_start = time.monotonic()
+    while True:
+        x = random.expovariate(1.0 / QUIESCENCE_MEAN_S)
+        if x <= QUIESCENCE_MAX_S - QUIESCENCE_MIN_S:
+            break
+    quiescence_dur = QUIESCENCE_MIN_S + x
+    band_anchor = hw.position_deg()
+    band_start = time.monotonic()
+    while time.monotonic() - band_start < quiescence_dur:
+        _check_escape()
+        pos = hw.position_deg()
+        if abs(pos - band_anchor) > QUIESCENCE_STILL_BAND_DEG:
+            band_anchor = pos
+            band_start = time.monotonic()
+        flip()
+
+    pos_at_stim_on = hw.position_deg()
+    gabor.contrast = 1.0
+    sync_sq.fillColor = "white"
+    hw.cue_on()
+    flip()
+    t_cue = time.monotonic()
+
+    response = 0
+    while time.monotonic() - t_cue < HAB_TIMEOUT_S:
+        _check_escape()
+        dx = hw.position_deg() - pos_at_stim_on
+        if abs(dx) >= HAB_MOVEMENT_DEG:
+            response = side  
+            break
+        flip()
+    
+    t_response = time.monotonic()
+    response_time_s = t_response - t_cue
+    correct = (response != 0)
+
+    if correct:
+        gabor.pos = (0.0, 0.0)
+        flip()
+        hw.reward()
+        _wait(HAB_CENTER_S, flip)
+        dispensed_ul = reward_ul
+    else:
+        hw.noise()
+        _wait(error_timeout_s, flip)
+        dispensed_ul = 0.0
+
+    gabor.contrast = 0.0
+    sync_sq.fillColor = "black"
+    hw.cue_off()
+    hw.trial_off()
+    t_end = time.monotonic()
+    _wait(HAB_ITI_S, flip)
+    
+    return TrialResult(
+        trial_index=trial_index, side=side, contrast=1.0, response=response,
+        correct=correct, response_time_s=response_time_s,
+        t_start=t_start, t_cue=t_cue, t_response=t_response, t_end=t_end,
+        iti_s=HAB_ITI_S, reward_ul=dispensed_ul,
+    )
+
+def run_habituation_clamped_trial(win, gabor, sync_sq, hw, side, trial_index, reward_ul, error_timeout_s, log_frame=None):
+    """Phase 3 (Clamped): 올바른 방향으로만 이동 가능, 끝까지 밀어야 보상."""
+    def flip():
+        win.flip()
+        if log_frame is not None:
+            log_frame(time.monotonic(), float(gabor.pos[0]), hw.position_deg())
+
+    hw.trial_on()
+    gabor.contrast = 0.0
+    gabor.pos = (side * STIM_START_OFFSET_DEG, 0.0)
+    sync_sq.fillColor = "black"
+    flip()
+
+    t_start = time.monotonic()
+    while True:
+        x = random.expovariate(1.0 / QUIESCENCE_MEAN_S)
+        if x <= QUIESCENCE_MAX_S - QUIESCENCE_MIN_S:
+            break
+    quiescence_dur = QUIESCENCE_MIN_S + x
+    band_anchor = hw.position_deg()
+    band_start = time.monotonic()
+    while time.monotonic() - band_start < quiescence_dur:
+        _check_escape()
+        pos = hw.position_deg()
+        if abs(pos - band_anchor) > QUIESCENCE_STILL_BAND_DEG:
+            band_anchor = pos
+            band_start = time.monotonic()
+        flip()
+
+    pos_at_stim_on = hw.position_deg()
+    gabor.contrast = 1.0
+    sync_sq.fillColor = "white"
+    hw.cue_on()
+    flip()
+    t_cue = time.monotonic()
+
+    response = 0
+    while time.monotonic() - t_cue < HAB_TIMEOUT_S:
+        _check_escape()
+        current_pos = hw.position_deg()
+        dx = hw.position_deg() - pos_at_stim_on
+        
+        # Clamping 로직
+        if side > 0: # 우측에 떴을 때
+            if dx > 0:
+                pos_at_stim_on = current_pos
+                dx = min(dx, 0.0) # 좌측으로 당기는 것만 허용
+        else:        # 좌측에 떴을 때
+            if dx < 0:
+                pos_at_stim_on = current_pos
+                dx = max(dx, 0.0) # 우측으로 미는 것만 허용
+            
+        gabor.pos = (side * STIM_START_OFFSET_DEG + dx, 0.0)
+        
+        if abs(dx) >= STIM_START_OFFSET_DEG:
+            response = side
+            break
+        flip()
+        
+    t_response = time.monotonic()
+    response_time_s = t_response - t_cue
+    correct = (response != 0)
+
+    if correct:
+        gabor.pos = (0.0, 0.0)
+        hw.reward()
+        _wait(HAB_CENTER_S, flip)
+        dispensed_ul = reward_ul
+    else:
+        hw.noise()
+        _wait(error_timeout_s, flip)
+        dispensed_ul = 0.0
+
+    gabor.contrast = 0.0
+    sync_sq.fillColor = "black"
+    hw.cue_off()
+    hw.trial_off()
+    t_end = time.monotonic()
+    _wait(HAB_ITI_S, flip)
+    
+    return TrialResult(
+        trial_index=trial_index, side=side, contrast=1.0, response=response,
+        correct=correct, response_time_s=response_time_s,
+        t_start=t_start, t_cue=t_cue, t_response=t_response, t_end=t_end,
+        iti_s=HAB_ITI_S, reward_ul=dispensed_ul,
     )
 
 def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
@@ -360,7 +514,9 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 auto_reward=False, calibration=None,
                 active_contrasts=None, expansion_tiers=None,
                 on_trial_complete=None, should_stop=None,
-                mode="training"):
+                mode="training",
+                random_reward_prob=0.0, random_reward_ul=None, 
+                random_reward_ms=None, random_reward_streak = 1):
     """Loop trials, log results. Returns 0 / 2 (hw error).
 
     With auto_reward, advance one tier in `calibration` per correct trial
@@ -371,6 +527,7 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
     logger = TrialLogger(session_dir)
     tier = 0
     try:
+        streak = 0
         for trial_index in range(n_trials):
             if hw.error is not None:
                 return 2
@@ -383,12 +540,32 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
             else:
                 ms_now = reward_ms
                 ul_now = reward_ul
-            hw.set_reward_duration(ms_now)
+
+            use_large = (
+                random_reward_prob > 0.0
+                and random_reward_ul is not None
+                and streak >= random_reward_streak-1
+                and random.random() < random_reward_prob
+            )
+            if use_large:
+                hw.set_reward_duration(random_reward_ms)
+                ul_now = random_reward_ul
+            else:
+                hw.set_reward_duration(ms_now)
+
             try:
-                if mode == "habituation":
+                if mode == "habituation_passive":
                     side = random.choice([-1, 1])
-                    result = run_habituation_trial(win, gabor, sync, hw, side, trial_index,
+                    result = run_habituation_passive_trial(win, gabor, sync, hw, side, trial_index,
                                                     reward_ul=ul_now, log_frame=logger.log_frame)
+                elif mode == "habituation_any_move":
+                    side = random.choice([-1, 1])
+                    result = run_habituation_any_move_trial(win, gabor, sync, hw, side, trial_index,
+                                                    reward_ul=ul_now, error_timeout_s=error_timeout_s, log_frame=logger.log_frame)
+                elif mode == "habituation_clamped":
+                    side = random.choice([-1, 1])
+                    result = run_habituation_clamped_trial(win, gabor, sync, hw, side, trial_index,
+                                                    reward_ul=ul_now, error_timeout_s=error_timeout_s, log_frame=logger.log_frame)
                 else:
                     side, contrast = schedule.next_trial()
                     result = run_trial(win, gabor, sync, hw, side, contrast, trial_index,
@@ -402,6 +579,14 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
             logger.log_trial(result)
             if on_trial_complete:
                 on_trial_complete(result)
+
+            if result.correct:
+                streak += 1
+                if streak == random_reward_streak:
+                    streak = 0
+            else:
+                streak = 0
+
             if auto_reward and calibration:
                 if result.correct:
                     tier = min(tier + 1, len(calibration) - 1)
@@ -424,14 +609,18 @@ def _write_summary(sd, start, end, args, results, calibration=None):
 
     s = {
         "subject": args.subject,
+        "mode": args.mode,
         "start": start.isoformat(timespec="seconds"),
         "end": end.isoformat(timespec="seconds"),
         "duration_s": (end - start).total_seconds(),
         "n_trials_target": args.n_trials,
         "auto_reward": bool(args.auto_reward),
+        "random_reward": bool(args.random_reward),
+        "random_reward_prob": args.random_reward_prob if bool(args.random_reward) else None,
+        "random_reward_streak": args.random_reward_streak if bool(args.random_reward) else None,
         "reward_ms": None if args.auto_reward else args.reward_ms,
         "reward_ul": None if args.auto_reward else args.reward_ul,
-        "calibration": calibration if args.auto_reward else None,
+        "calibration": calibration,
         "error_timeout_s": args.error_timeout,
         "iti_min_s": args.iti_min,
         "iti_mean_s": args.iti_mean,
@@ -458,6 +647,12 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         reward_line = f"- Reward: auto-adjust, tiers = {tiers_ul} µL (ms = {tiers_ms})"
     else:
         reward_line = f"- Reward: {s['reward_ms']} ms / {s['reward_ul']} µL"
+    
+    if s["random_reward"]:
+        random_reward_line = f"- Random Reward: Enabled (Probability: {s['random_reward_prob']}, Streak: {s['random_reward_streak']})"
+    else:
+        random_reward_line = f"- Random Reward: Disabled"
+    
     pct = f"{100 * s['correct_rate']:.1f}%" if s["correct_rate"] is not None else "—"
     rt_s = f"{s['mean_rt_correct_s']:.3f} s" if s["mean_rt_correct_s"] is not None else "—"
     bias_s = f"{s['response_bias']:+.3f}" if s["response_bias"] is not None else "—"
@@ -468,8 +663,10 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         "",
         "## Setup",
         "",
+        f"- Mode: {s['mode']}",
         f"- N trials (target): {s['n_trials_target']}",
         reward_line,
+        random_reward_line,
         f"- Water limit: {s['water_limit_ul'] or '—'} µL",
         f"- Error timeout: {s['error_timeout_s']} s",
         f"- ITI: min {s['iti_min_s']} / mean {s['iti_mean_s']} / max {s['iti_max_s']} s",
@@ -497,7 +694,7 @@ def _runner_main():
         sys.stdout.write(json.dumps(payload) + "\n"); sys.stdout.flush()
 
     ap = argparse.ArgumentParser(prog="ibl.task")
-    ap.add_argument("--mode", type=str, choices=["training", "habituation"],default="training")
+    ap.add_argument("--mode", type=str, choices=["training", "habituation_passive", "habituation_any_move", "habituation_clamped"], default="training")
     ap.add_argument("--subject", required=True)
     ap.add_argument("--n-trials", type=int, required=True)
     ap.add_argument("--mock", action="store_true")
@@ -529,6 +726,15 @@ def _runner_main():
                     help="advance reward one tier per correct trial; reset on wrong/no-go")
     ap.add_argument("--calibration", type=str, default=None,
                     help="JSON list [{target_ul, ms}, ...]; required with --auto-reward")
+    ap.add_argument("--random-reward", action="store_true",
+                    help="enable random large rewards")
+    ap.add_argument("--random-reward-prob", type=float, default=0.0,
+                    help="probability of using large reward (random reward)")
+    ap.add_argument("--random-reward-ul", type=float, default=None,
+                    help="large reward amount in µL (random reward)")
+    ap.add_argument("--random-reward-ms", type=int, default=None,
+                    help="large reward duration in ms (random reward)")
+    ap.add_argument("--random-reward-streak", type=int, default=1)
     ap.add_argument("--ready", action="store_true",
                     help="open window in standby; wait for a 'start' line on stdin before trials")
     args = ap.parse_args()
@@ -637,6 +843,10 @@ def _runner_main():
                 on_trial_complete=on_trial,
                 should_stop=lambda: stop["flag"],
                 mode = args.mode,
+                random_reward_prob=args.random_reward_prob,
+                random_reward_ul=args.random_reward_ul,
+                random_reward_ms=args.random_reward_ms,
+                random_reward_streak=args.random_reward_streak,
             )
         finally:
             _write_summary(sd, start, datetime.datetime.now(), args, results, calibration)
