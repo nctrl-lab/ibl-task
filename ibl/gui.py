@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 
 from ibl.config import (
     CONTRAST_PRESETS,
+    EMA_ALPHA,
     ERROR_TIMEOUT_S,
     ITI_MAX_S,
     ITI_MEAN_S,
@@ -327,6 +328,33 @@ class MainWindow(QMainWindow):
             label = ", ".join(f"{c * 100:g}" for c in preset)
             self.contrast_combo.addItem(label, list(preset))
         train_form.addRow("Contrast (%):", self.contrast_combo)
+
+        # Counter-bias: EMA of right-choice rate (bucketed by previous trial).
+        # Off => 50/50 random.
+        self.ema_cb = QCheckBox("on")
+        self.ema_cb.setChecked(True)
+        self.ema_cb.setToolTip(
+            "Counter-bias the cue side using an EMA of the mouse's recent "
+            "right-choice rate, bucketed by previous (cue side, outcome). "
+            "Off: sides drawn 50/50 random."
+        )
+        self.ema_alpha = QDoubleSpinBox()
+        self.ema_alpha.setRange(0.01, 1.0)
+        self.ema_alpha.setSingleStep(0.05)
+        self.ema_alpha.setDecimals(2)
+        self.ema_alpha.setValue(EMA_ALPHA)
+        self.ema_alpha.setMaximumWidth(80)
+        self.ema_cb.toggled.connect(self.ema_alpha.setEnabled)
+        ema_row = QHBoxLayout()
+        ema_row.setContentsMargins(0, 0, 0, 0)
+        ema_row.setSpacing(4)
+        ema_row.addWidget(self.ema_cb)
+        ema_row.addWidget(QLabel("alpha"))
+        ema_row.addWidget(self.ema_alpha)
+        ema_row.addStretch(1)
+        ema_w = QWidget()
+        ema_w.setLayout(ema_row)
+        train_form.addRow("Counter-bias:", ema_w)
         ctrl_row.addWidget(train_box, 1)
 
         # Action buttons: Ready opens the PsychoPy window in standby; Start
@@ -500,12 +528,16 @@ class MainWindow(QMainWindow):
             str(self.iti_max.value()),
             "--contrasts",
             ",".join(str(c) for c in contrasts),
+            "--ema-alpha",
+            str(self.ema_alpha.value()),
             "--screen",
             str(screen_idx),
             "--screen-size",
             f"{geom.width()}x{geom.height()}",
             "--ready",
         ]
+        if not self.ema_cb.isChecked():
+            argv.append("--no-ema")
         if self.auto_reward_cb.isChecked():
             argv += [
                 "--auto-reward",
@@ -708,8 +740,10 @@ class MainWindow(QMainWindow):
             self.iti_mean,
             self.iti_max,
             self.contrast_combo,
+            self.ema_cb,
         ):
             w.setEnabled(enabled and is_training)
+        self.ema_alpha.setEnabled(enabled and is_training and self.ema_cb.isChecked())
 
         self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
     
@@ -790,6 +824,8 @@ class MainWindow(QMainWindow):
         s.setValue("iti_mean", self.iti_mean.value())
         s.setValue("iti_max", self.iti_max.value())
         s.setValue("contrast_index", self.contrast_combo.currentIndex())
+        s.setValue("ema_on", self.ema_cb.isChecked())
+        s.setValue("ema_alpha", self.ema_alpha.value())
         s.setValue("display_index", self.display.currentIndex())
         s.setValue("geometry", self.saveGeometry())
         s.setValue("mode_index", self.mode_combo.currentIndex())
@@ -818,6 +854,8 @@ class MainWindow(QMainWindow):
         ci = s.value("contrast_index", 0, type=int)
         if 0 <= ci < self.contrast_combo.count():
             self.contrast_combo.setCurrentIndex(ci)
+        self.ema_cb.setChecked(s.value("ema_on", True, type=bool))
+        self.ema_alpha.setValue(s.value("ema_alpha", EMA_ALPHA, type=float))
         di = s.value("display_index", 0, type=int)
         if 0 <= di < self.display.count():
             self.display.setCurrentIndex(di)

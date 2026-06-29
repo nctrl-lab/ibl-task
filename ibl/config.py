@@ -64,9 +64,10 @@ CONTRAST_PRESETS = (
     (1.0, 0.25, 0.125, 0.0625, 0.0),
 )
 
-# Countermeasure cue scheduler: window of recent choices to debias against,
-# bucketed by the previous trial's (cue_side, outcome).
-COUNTER_WINDOW_TRIALS = 8
+# Counter-bias cue scheduler: EMA of the mouse's right-choice rate, bucketed
+# by the previous trial's (cue_side, outcome). alpha=0.3 gives a ~5-trial
+# half-life, matching nctrl-lab/mouse-vr TaskController.cs.
+EMA_ALPHA = 0.3
 
 # Mock hardware
 MOCK_DEG_PER_KEY = 4.0  # arrow-key dev only

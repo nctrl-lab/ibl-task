@@ -16,7 +16,7 @@ from typing import Callable
 import numpy as np
 
 from ibl.config import (
-    COUNTER_WINDOW_TRIALS, COUNTS_PER_MM, ERROR_TIMEOUT_S, EXPANSION_ACCURACY,
+    COUNTS_PER_MM, EMA_ALPHA, ERROR_TIMEOUT_S, EXPANSION_ACCURACY,
     EXPANSION_MIN_TRIALS, EXPANSION_TIERS, INITIAL_CONTRASTS,
     ITI_MAX_S, ITI_MEAN_S, ITI_MIN_S,
     OPEN_LOOP_HOLD_S, ORI_DEG, QUIESCENCE_MAX_S, QUIESCENCE_MEAN_S,
@@ -95,24 +95,22 @@ def _p_type(t: TrialResult) -> int:
 
 
 class TrainingSchedule:
-    """Countermeasure cue scheduler. For each of 4 buckets indexed by the
-    previous trial's (cue_side, outcome), keep the last WINDOW choices and
-    present Right with probability 1 − sumRight[bucket] / WINDOW — i.e. counter
-    to the mouse's recent bias after that situation. Contrast is uniform over
-    active_contrasts."""
-
-    WINDOW = COUNTER_WINDOW_TRIALS
+    """Counter-bias cue scheduler. For each of 4 buckets indexed by the
+    previous trial's (cue_side, outcome), maintain an EMA of P(response=Right)
+    and cue against it: P(cue=R) = 1 - avg_right[bucket]. Seeded at 0.5
+    (neutral). With use_ema=False the side is drawn 50/50. Contrast is sampled
+    over signed trial types per the IBL protocol (non-zero magnitudes weight 2
+    because each has +/-c forms; 0% weights 1)."""
 
     def __init__(self, active_contrasts: list[float] | None = None,
                  expansion_tiers: tuple[float, ...] | None = None,
-                 history: list[TrialResult] | None = None) -> None:
+                 history: list[TrialResult] | None = None,
+                 ema_alpha: float = EMA_ALPHA, use_ema: bool = True) -> None:
         self.active_contrasts = list(active_contrasts) if active_contrasts is not None else list(INITIAL_CONTRASTS)
         self.expansion_tiers = tuple(expansion_tiers) if expansion_tiers is not None else EXPANSION_TIERS
-        # Balanced prior: each bucket starts with WINDOW/2 R + WINDOW/2 L so
-        # p(R)≈0.5 until real data evicts the synthetic entries.
-        prior = [i % 2 for i in range(self.WINDOW)]
-        self._sum_right = [sum(prior)] * 4
-        self._window: list[deque[int]] = [deque(prior, maxlen=self.WINDOW) for _ in range(4)]
+        self.ema_alpha = ema_alpha
+        self.use_ema = use_ema
+        self._avg_right = [0.5] * 4
         self._p_type_prev: int | None = None
         self._last: TrialResult | None = None
         self._recent: deque[tuple[float, bool]] = deque(maxlen=EXPANSION_MIN_TRIALS)
@@ -128,29 +126,18 @@ class TrainingSchedule:
     def _attribute(self, response: int, p: int) -> None:
         if response == 0:
             return
-        bit = 1 if response > 0 else 0
-        bucket = self._window[p]
-        if len(bucket) == self.WINDOW:
-            self._sum_right[p] += bit - bucket[0]
-        else:
-            self._sum_right[p] += bit
-        bucket.append(bit)
+        bit = 1.0 if response > 0 else 0.0
+        self._avg_right[p] += self.ema_alpha * (bit - self._avg_right[p])
 
     def next_trial(self):
-        """Returns (side, contrast). Contrast is drawn uniformly over signed
-        trial types as in the IBL protocol: each non-zero magnitude weights 2
-        (it has ±c forms) and 0% weights 1, matching the paper's 2/11 vs 1/11
-        distribution on the full set."""
         weights = [1.0 if c == 0 else 2.0 for c in self.active_contrasts]
         contrast = random.choices(self.active_contrasts, weights=weights, k=1)[0]
         if self._last is not None and self._p_type_prev is not None:
             self._attribute(self._last.response, self._p_type_prev)
-
-        if self._last is None:
+        self._p_type_prev = _p_type(self._last) if self._last is not None else None
+        if self._p_type_prev is None or not self.use_ema:
             return random.choice([-1, 1]), contrast
-
-        self._p_type_prev = _p_type(self._last)
-        side = 1 if random.randrange(self.WINDOW) >= self._sum_right[self._p_type_prev] else -1
+        side = 1 if random.random() >= self._avg_right[self._p_type_prev] else -1
         return side, contrast
 
     def record(self, result: TrialResult) -> None:
@@ -515,15 +502,17 @@ def run_session(hw, win, gabor, sync, *, session_dir, n_trials,
                 active_contrasts=None, expansion_tiers=None,
                 on_trial_complete=None, should_stop=None,
                 mode="training",
-                random_reward_prob=0.0, random_reward_ul=None, 
-                random_reward_ms=None, random_reward_streak = 1):
+                random_reward_prob=0.0, random_reward_ul=None,
+                random_reward_ms=None, random_reward_streak = 1,
+                ema_alpha=EMA_ALPHA, use_ema=True):
     """Loop trials, log results. Returns 0 / 2 (hw error).
 
     With auto_reward, advance one tier in `calibration` per correct trial
     (capped) and reset to the smallest on wrong / no-go.
     """
     schedule = TrainingSchedule(active_contrasts=active_contrasts,
-                                expansion_tiers=expansion_tiers)
+                                expansion_tiers=expansion_tiers,
+                                ema_alpha=ema_alpha, use_ema=use_ema)
     logger = TrialLogger(session_dir)
     tier = 0
     try:
@@ -628,6 +617,8 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         "water_limit_ul": args.water_limit,
         "gain_deg_per_mm": args.gain,
         "contrasts": args.contrasts,
+        "ema_alpha": args.ema_alpha if not args.no_ema else None,
+        "use_ema": not args.no_ema,
         "mock": args.mock,
         "port": None if args.mock else args.port,
         "screen": args.screen,
@@ -672,6 +663,7 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         f"- ITI: min {s['iti_min_s']} / mean {s['iti_mean_s']} / max {s['iti_max_s']} s",
         f"- Wheel gain: {s['gain_deg_per_mm']} deg/mm",
         f"- Contrasts: {s['contrasts'] or 'default'}",
+        f"- Counter-bias: {'EMA alpha=' + format(s['ema_alpha'], 'g') if s['use_ema'] else 'off (random)'}",
         f"- Hardware: {'mock' if s['mock'] else s['port']}, screen {s['screen']}",
         "",
         "## Outcome",
@@ -735,6 +727,10 @@ def _runner_main():
     ap.add_argument("--random-reward-ms", type=int, default=None,
                     help="large reward duration in ms (random reward)")
     ap.add_argument("--random-reward-streak", type=int, default=1)
+    ap.add_argument("--ema-alpha", type=float, default=EMA_ALPHA,
+                    help="counter-bias EMA learning rate in (0, 1]")
+    ap.add_argument("--no-ema", action="store_true",
+                    help="disable counter-bias scheduler; sides drawn 50/50")
     ap.add_argument("--ready", action="store_true",
                     help="open window in standby; wait for a 'start' line on stdin before trials")
     args = ap.parse_args()
@@ -847,6 +843,8 @@ def _runner_main():
                 random_reward_ul=args.random_reward_ul,
                 random_reward_ms=args.random_reward_ms,
                 random_reward_streak=args.random_reward_streak,
+                ema_alpha=args.ema_alpha,
+                use_ema=not args.no_ema,
             )
         finally:
             _write_summary(sd, start, datetime.datetime.now(), args, results, calibration)
