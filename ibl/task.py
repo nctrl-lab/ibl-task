@@ -629,6 +629,8 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         "mean_rt_correct_s": (sum(rts) / len(rts)) if rts else None,
         "response_bias": ((n_right - n_left) / responded) if responded else None,
         "water_dispensed_ul": sum(r.reward_ul for r in results),
+        "auto_stop": args.auto_stop,
+    "auto_stop_ul": args.auto_stop_ul,
     }
     (sd / "summary.json").write_text(json.dumps(s, indent=2) + "\n", encoding="utf-8")
 
@@ -674,6 +676,8 @@ def _write_summary(sd, start, end, args, results, calibration=None):
         f"- Mean RT (correct): {rt_s}",
         f"- Response bias (R−L)/(R+L): {bias_s}",
         f"- Water dispensed: {s['water_dispensed_ul']:.1f} µL  ({s['n_correct']} rewards)",
+        f"- Counter-bias: {'EMA alpha=' + format(s['ema_alpha'], 'g') if s['use_ema'] else 'off (random)'}",
+        f"- Auto-stop: {s['auto_stop']} (at {s['auto_stop_ul']} µL)" if s['auto_stop'] else "- Auto-stop: Disabled",
     ]
     (sd / "SUMMARY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -712,6 +716,9 @@ def _runner_main():
     ap.add_argument("--iti-max", type=float, default=ITI_MAX_S)
     ap.add_argument("--water-limit", type=int, default=None,
                     help="logged in SUMMARY.md; enforcement lives in the GUI")
+    ap.add_argument("--auto-stop", action="store_true")
+    ap.add_argument("--auto-stop-ul", type=float, default=500.0,
+                    help="Minimum water consumed (ul) before fatigue criteria applies")
     ap.add_argument("--data-dir", type=str, default=None,
                     help="parent folder for session output; defaults to cwd")
     ap.add_argument("--auto-reward", action="store_true",
@@ -823,9 +830,27 @@ def _runner_main():
         sd = parent / f"{args.subject}_{start.strftime('%Y-%m-%d_%H-%M-%S')}"
         sd.mkdir(parents=True, exist_ok=True)
         results = []
+        peak_accuracy = 0.0
         def on_trial(r):
+            nonlocal peak_accuracy
             results.append(r)
             emit({"type": "trial", **dataclasses.asdict(r)})
+            if args.auto_stop and args.mode == "training":
+                WINDOW_SIZE = 20
+                if len(results) >= WINDOW_SIZE:
+                    recent = results[-WINDOW_SIZE:]
+                    current_accuracy = sum(1 for t in recent if t.correct) / WINDOW_SIZE
+                    
+                    if current_accuracy > peak_accuracy:
+                        peak_accuracy = current_accuracy
+                    
+                    total_water = sum(t.reward_ul for t in results)
+                    
+                    if total_water >= args.auto_stop_ul:
+                        if peak_accuracy >= 0.7 and current_accuracy <= 0.5:
+                            msg = f"Auto-stop triggered: Peak {peak_accuracy*100:.0f}% -> Current {current_accuracy*100:.0f}%"
+                            emit({"type": "error", "msg": msg})
+                            stop["flag"] = True
         try:
             return run_session(
                 hw, win, gabor, sync, session_dir=sd,

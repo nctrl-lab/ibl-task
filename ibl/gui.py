@@ -76,7 +76,7 @@ class PsychometricPlot(pg.PlotWidget):
 
 
 class AccuracyPlot(pg.PlotWidget):
-    WINDOW = 10
+    WINDOW = 20
 
     def __init__(self) -> None:
         super().__init__(title=f"Running accuracy ({self.WINDOW}-trial boxcar)")
@@ -207,6 +207,30 @@ class MainWindow(QMainWindow):
         self.water_limit.setValue(1000)
         self.water_limit.setMaximumWidth(120)
         session_form.addRow("Water limit:", self.water_limit)
+
+        self.auto_stop_cb = QCheckBox("Auto-stop on fatigue")
+        self.auto_stop_cb.setChecked(True)
+        self.auto_stop_cb.setToolTip("After 70% performance, if current performance is under 50%, end the session.")
+        
+        self.auto_stop_ul = QSpinBox()
+        self.auto_stop_ul.setRange(100, 5000)
+        self.auto_stop_ul.setValue(500)
+        self.auto_stop_ul.setSuffix(" µL")
+        self.auto_stop_ul.setMaximumWidth(80)
+        self.auto_stop_cb.toggled.connect(self.auto_stop_ul.setEnabled)
+
+        auto_stop_row = QHBoxLayout()
+        auto_stop_row.setContentsMargins(0, 0, 0, 0)
+        auto_stop_row.setSpacing(4)
+        auto_stop_row.addWidget(self.auto_stop_cb)
+        auto_stop_row.addWidget(QLabel("after"))
+        auto_stop_row.addWidget(self.auto_stop_ul)
+        auto_stop_row.addStretch(1)
+
+        auto_stop_w = QWidget()
+        auto_stop_w.setLayout(auto_stop_row)
+        session_form.addRow("End criteria:", auto_stop_w)
+
         data_row = QHBoxLayout()
         data_row.setContentsMargins(0, 0, 0, 0)
         data_row.setSpacing(4)
@@ -567,6 +591,11 @@ class MainWindow(QMainWindow):
                     for t in self._calibration
                 ]),
             ]
+        if self.auto_stop_cb.isChecked():
+            argv += [
+                "--auto-stop",
+                "--auto-stop-ul", str(self.auto_stop_ul.value())
+            ]
         if self.mock_cb.isChecked():
             argv.append("--mock")
         else:
@@ -727,6 +756,8 @@ class MainWindow(QMainWindow):
             self.mock_cb,
             self.n_trials,
             self.water_limit,
+            self.auto_stop_cb,
+            self.auto_stop_ul,
             self.display,
             self.mode_combo,
         ):
@@ -746,6 +777,8 @@ class MainWindow(QMainWindow):
         self.ema_alpha.setEnabled(enabled and is_training and self.ema_cb.isChecked())
 
         self.reward_combo.setEnabled(enabled and not self.auto_reward_cb.isChecked())
+
+        self.auto_stop_ul.setEnabled(enabled and not self.auto_stop_cb.isChecked())
     
     def _on_mode_changed(self, index):
         if "habituation" in self.mode_combo.currentData():
@@ -814,6 +847,8 @@ class MainWindow(QMainWindow):
         s.setValue("mock", self.mock_cb.isChecked())
         s.setValue("n_trials", self.n_trials.value())
         s.setValue("water_limit", self.water_limit.value())
+        s.setValue("auto_stop", self.auto_stop_cb.isChecked())
+        s.setValue("auto_stop_ul", self.auto_stop_ul.value())
         target = self.reward_combo.currentData()
         if target is not None:
             s.setValue("reward_target_ul", float(target["target_ul"]))
@@ -845,6 +880,8 @@ class MainWindow(QMainWindow):
                 if abs(self.reward_combo.itemData(i)["target_ul"] - target_ul) < 1e-9:
                     self.reward_combo.setCurrentIndex(i)
                     break
+        self.auto_stop_cb.setChecked(s.value("auto_stop", True, type=bool))
+        self.auto_stop_ul.setValue(s.value("auto_stop_ul", 500, type=int))
         self.auto_reward_cb.setChecked(s.value("auto_reward", False, type=bool))
         self.gain.setValue(s.value("gain", WHEEL_GAIN_DEG_PER_MM, type=float))
         self.error_timeout.setValue(s.value("error_timeout", ERROR_TIMEOUT_S, type=float))
